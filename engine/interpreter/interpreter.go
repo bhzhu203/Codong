@@ -3,6 +3,7 @@ package interpreter
 import (
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -611,10 +612,19 @@ func (i *Interpreter) evalWhile(node *parser.WhileStatement, env *Environment) O
 
 func (i *Interpreter) evalTryCatch(node *parser.TryCatchStatement, env *Environment) Object {
 	result := i.Eval(node.Try, env)
+	// Direct error
 	if errObj, ok := result.(*ErrorObject); ok {
 		catchEnv := NewEnclosedEnvironment(env)
 		catchEnv.Set(node.CatchVar.Value, errObj)
 		return i.Eval(node.Catch, catchEnv)
+	}
+	// ? operator wraps error in ReturnValue — intercept it in try block
+	if rv, ok := result.(*ReturnValue); ok {
+		if errObj, ok := rv.Value.(*ErrorObject); ok {
+			catchEnv := NewEnclosedEnvironment(env)
+			catchEnv.Set(node.CatchVar.Value, errObj)
+			return i.Eval(node.Catch, catchEnv)
+		}
 	}
 	return result
 }
@@ -626,10 +636,16 @@ func (i *Interpreter) evalMatch(node *parser.MatchStatement, env *Environment) O
 	}
 	for _, c := range node.Cases {
 		if c.IsDefault {
+			if c.BodyBlock != nil {
+				return i.Eval(c.BodyBlock, env)
+			}
 			return i.Eval(c.Body, env)
 		}
 		pattern := i.Eval(c.Pattern, env)
 		if objectsEqual(subject, pattern) {
+			if c.BodyBlock != nil {
+				return i.Eval(c.BodyBlock, env)
+			}
 			return i.Eval(c.Body, env)
 		}
 	}
@@ -746,6 +762,10 @@ func (i *Interpreter) applyFunction(fn Object, args []Object, named ...map[strin
 		result := i.Eval(fn.Body, extEnv)
 		if rv, ok := result.(*ReturnValue); ok {
 			return rv.Value
+		}
+		// Propagate runtime errors (e.g. stack overflow, division by zero)
+		if errObj, ok := result.(*ErrorObject); ok && errObj.IsRuntime {
+			return errObj
 		}
 		return NULL_OBJ
 	case *BuiltinFunction:
@@ -1091,6 +1111,10 @@ func (i *Interpreter) evalStringMethod(s *StringObject, method string) Object {
 				return &StringObject{Value: strings.ToLower(s.Value)}
 			case "trim":
 				return &StringObject{Value: strings.TrimSpace(s.Value)}
+			case "trim_start":
+				return &StringObject{Value: strings.TrimLeft(s.Value, " \t\n\r")}
+			case "trim_end":
+				return &StringObject{Value: strings.TrimRight(s.Value, " \t\n\r")}
 			case "contains":
 				if len(args) < 1 {
 					return NULL_OBJ
@@ -1185,6 +1209,25 @@ func (i *Interpreter) evalStringMethod(s *StringObject, method string) Object {
 				return &NumberObject{Value: v}
 			case "to_bool":
 				return nativeBoolToObject(s.Value == "true" || s.Value == "1")
+			case "match":
+				if len(args) < 1 {
+					return NULL_OBJ
+				}
+				pat, ok := args[0].(*StringObject)
+				if !ok {
+					return NULL_OBJ
+				}
+				re, err := regexp.Compile(pat.Value)
+				if err != nil {
+					return newRuntimeError(codongerror.E1005_INVALID_ARGUMENT,
+						fmt.Sprintf("invalid regex pattern: %s", err.Error()), "")
+				}
+				matches := re.FindAllString(s.Value, -1)
+				var elements []Object
+				for _, m := range matches {
+					elements = append(elements, &StringObject{Value: m})
+				}
+				return &ListObject{Elements: elements}
 			}
 			return NULL_OBJ
 		},

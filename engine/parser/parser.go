@@ -347,7 +347,11 @@ func (p *Parser) parseMatchStatement() *MatchStatement {
 			return nil
 		}
 		p.nextToken() // skip =>
-		mc.Body = p.parseExpression(LOWEST)
+		if p.curToken.Type == lexer.LBRACE {
+			mc.BodyBlock = p.parseBlockStatement()
+		} else {
+			mc.Body = p.parseExpression(LOWEST)
+		}
 		stmt.Cases = append(stmt.Cases, mc)
 		p.nextToken()
 		p.skipNewlines()

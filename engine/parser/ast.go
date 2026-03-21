@@ -191,8 +191,9 @@ func (ws *WhileStatement) String() string {
 }
 
 type MatchCase struct {
-	Pattern   Expression // literal or nil for default
-	Body      Expression
+	Pattern   Expression      // literal or nil for default
+	Body      Expression      // for: pattern => expr
+	BodyBlock *BlockStatement // for: pattern => { stmts }
 	IsDefault bool
 }
 

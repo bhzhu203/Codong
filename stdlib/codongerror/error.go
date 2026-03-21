@@ -46,7 +46,11 @@ type CodongError struct {
 
 // Error implements the Go error interface.
 func (e *CodongError) Error() string {
-	return fmt.Sprintf("[%s] %s", e.Code, e.Message)
+	s := fmt.Sprintf("[%s] %s", e.Code, e.Message)
+	if e.Fix != "" {
+		s += fmt.Sprintf("\n  fix: %s", e.Fix)
+	}
+	return s
 }
 
 // IsError returns true, identifying this as a Codong error object (not a regular map).
