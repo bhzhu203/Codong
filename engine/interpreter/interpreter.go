@@ -819,6 +819,13 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 		return i.evalErrorModuleMethod(prop)
 	}
 
+	// Friendly errors for common other-language patterns
+	if bf, ok := obj.(*BuiltinFunction); ok && bf.Name == "console" {
+		return newRuntimeError(codongerror.E1004_UNDEFINED_FUNC,
+			fmt.Sprintf("console.%s() is not a Codong function", prop),
+			"use print() instead: print(\"your message\")")
+	}
+
 	return NULL_OBJ
 }
 
@@ -1390,11 +1397,25 @@ var builtins = map[string]*BuiltinFunction{
 	"print": {
 		Name: "print",
 		Fn: func(interp *Interpreter, args ...Object) Object {
-			if len(args) > 0 {
-				output := args[0].Inspect()
-				fmt.Println(output)
-				interp.output = append(interp.output, output)
+			if len(args) == 0 {
+				fmt.Println()
+				return NULL_OBJ
 			}
+			// Filter out trailing named-args MapObject from builtin call
+			printArgs := args
+			if len(args) > 1 {
+				if _, isNamed := args[len(args)-1].(*MapObject); isNamed && len(args) == 2 {
+					printArgs = args[:1]
+				}
+			}
+			if len(printArgs) > 1 {
+				return newRuntimeError(codongerror.E1005_INVALID_ARGUMENT,
+					fmt.Sprintf("print() takes exactly 1 argument, got %d", len(printArgs)),
+					"use string interpolation: print(\"{a} {b}\")")
+			}
+			output := printArgs[0].Inspect()
+			fmt.Println(output)
+			interp.output = append(interp.output, output)
 			return NULL_OBJ
 		},
 	},
@@ -1473,6 +1494,22 @@ var builtins = map[string]*BuiltinFunction{
 			return newRuntimeError(codongerror.E1001_SYNTAX_ERROR,
 				"channel() is not supported in eval mode",
 				"use 'codong run' or 'codong build' for concurrency features")
+		},
+	},
+	"log": {
+		Name: "log",
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			return newRuntimeError(codongerror.E1004_UNDEFINED_FUNC,
+				"log() is not a Codong function",
+				"use print() instead: print(\"your message\")")
+		},
+	},
+	"console": {
+		Name: "console",
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			return newRuntimeError(codongerror.E1004_UNDEFINED_FUNC,
+				"console.log() is not a Codong function",
+				"use print() instead: print(\"your message\")")
 		},
 	},
 }
