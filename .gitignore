@@ -17,4 +17,6 @@ vendor/
 
 # Build output
 /bin/
+
+# Archive
 归档.zip
