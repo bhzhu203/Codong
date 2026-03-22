@@ -24,7 +24,12 @@ func Run(codFile string) error {
 	goSource, parseErrors := compile(string(source))
 	if len(parseErrors) > 0 {
 		for _, e := range parseErrors {
-			fmt.Fprintln(os.Stderr, e)
+			ce := map[string]interface{}{
+				"code": "E1001_SYNTAX_ERROR", "error": "syntax",
+				"message": e, "fix": "check syntax", "retry": false,
+			}
+			jsonBytes, _ := json.Marshal(ce)
+			fmt.Println(string(jsonBytes))
 		}
 		return fmt.Errorf("parse errors")
 	}
@@ -272,9 +277,19 @@ func translateGoError(stderr string) string {
 
 		case strings.Contains(msg, "declared and not used:"):
 			varName := strings.TrimSpace(strings.TrimPrefix(msg, "declared and not used:"))
-			ce.Code = "E1003_UNDEFINED_VAR"
-			ce.Message = fmt.Sprintf("variable '%s' is declared but not used", varName)
-			ce.Fix = fmt.Sprintf("use the variable %s or remove it", varName)
+			ce.Code = "E1001_SYNTAX_ERROR"
+			ce.Message = fmt.Sprintf("cannot assign to const '%s'", varName)
+			ce.Fix = "remove const declaration or use a different variable name"
+
+		case strings.Contains(msg, "cannot use _ as value"):
+			ce.Code = "E1001_SYNTAX_ERROR"
+			ce.Message = "invalid use of _ identifier"
+			ce.Fix = "use a named variable instead"
+
+		case strings.Contains(msg, "use of untyped nil"):
+			ce.Code = "E1001_SYNTAX_ERROR"
+			ce.Message = "invalid nil assignment"
+			ce.Fix = "check the expression"
 
 		case strings.Contains(msg, "len (built-in) must be called"):
 			ce.Code = "E1004_UNDEFINED_FUNC"

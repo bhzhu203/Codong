@@ -347,6 +347,7 @@ func (g *Generator) genTryCatch(s *parser.TryCatchStatement) {
 		g.writef("var %s Value", goVar)
 		g.declared[catchVar] = true
 	}
+	g.writef("_ = %s", goVar)
 	g.write("func() {")
 	g.indent++
 	g.write("defer func() {")
