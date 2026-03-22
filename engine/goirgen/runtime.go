@@ -167,14 +167,27 @@ func toBool(v Value) bool {
 }
 
 // toBoolV is the Codong to_bool() built-in function — returns Value for use in expressions
+// For strings: only "true"/"1" are true (explicit conversion)
+// For everything else: use Codong isTruthy (0, "", [], {} are truthy)
 func toBoolV(v Value) Value {
 	if v == nil { return false }
 	switch b := v.(type) {
 	case bool: return b
-	case string: return b == "true" || b == "1"
+	case string:
+		// Explicit conversion: "true"/"1"/"yes" → true, "false"/"0" → false
+		// Empty string and other strings follow Codong truthy rules
+		switch b {
+		case "true", "1", "yes": return true
+		case "false", "0": return false
+		}
+		return true // all other strings (including "") are truthy per SPEC
+	case float64: return true // 0 is truthy in Codong
 	}
 	return true
 }
+
+// isTruthyV wraps isTruthy to return Value
+func isTruthyV(v Value) Value { return isTruthy(v) }
 
 func isTruthy(v Value) bool {
 	if v == nil { return false }
@@ -711,11 +724,16 @@ func cWebHtml(body Value) *CodongMap {
 var cDB *sql.DB
 
 func cDbConnect(dsn string) Value {
+	// Strip SQLite URL prefix if present
+	cleanDSN := dsn
+	if strings.HasPrefix(dsn, "sqlite:///") { cleanDSN = dsn[len("sqlite:///"):] }
+	if strings.HasPrefix(dsn, "sqlite://") { cleanDSN = dsn[len("sqlite://"):] }
 	var err error
-	cDB, err = sql.Open("sqlite", dsn)
-	if err != nil { panic(cError("E2002", "db connect failed: " + err.Error())) }
+	cDB, err = sql.Open("sqlite", cleanDSN)
+	if err != nil { return cError("E2002", "db connect failed: " + err.Error()) }
+	if err := cDB.Ping(); err != nil { return cError("E2002", "connection failed: " + err.Error()) }
 	cDB.Exec("PRAGMA journal_mode=WAL")
-	return nil
+	return true
 }
 
 func cDbDisconnectRT() Value {
@@ -728,6 +746,7 @@ func cDbDisconnect() {
 }
 
 func cDbQuery(sqlStr string, params ...Value) Value {
+	if cDB == nil { return cError("E2002", "no database connection") }
 	args := make([]interface{}, len(params))
 	for i, p := range params { args[i] = valueToGo(p) }
 	trimmed := strings.TrimSpace(strings.ToUpper(sqlStr))
@@ -742,6 +761,24 @@ func cDbQuery(sqlStr string, params ...Value) Value {
 	aff, _ := result.RowsAffected()
 	lid, _ := result.LastInsertId()
 	return cMap("affected", float64(aff), "id", float64(lid))
+}
+
+func cDbCount(table string, filterVal Value) Value {
+	if cDB == nil { return cError("E2002", "no database connection") }
+	var filter *CodongMap
+	if filterVal != nil { filter, _ = filterVal.(*CodongMap) }
+	where, args := filterSQL(filter)
+	q := "SELECT COUNT(*) FROM " + table
+	if where != "" { q += " WHERE " + where }
+	var count int64
+	if err := cDB.QueryRow(q, args...).Scan(&count); err != nil { return cError("E2003", err.Error()) }
+	return float64(count)
+}
+
+func cDbExists(table string, filterVal Value) Value {
+	count := cDbCount(table, filterVal)
+	if f, ok := count.(float64); ok { return f > 0 }
+	return false
 }
 
 func cDbInsert(table string, dataVal Value) Value {

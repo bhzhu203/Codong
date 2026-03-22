@@ -540,11 +540,15 @@ func (g *Generator) genDbCall(method string, args []string, named map[string]par
 		}
 		return fmt.Sprintf("cDbQuery(toString(%s))", args[0])
 	case "count":
-		// Simplify: use raw query
 		if len(args) > 1 {
-			return fmt.Sprintf("cDbQuery(\"SELECT COUNT(*) as count FROM \"+toString(%s))", args[0])
+			return fmt.Sprintf("cDbCount(toString(%s), %s)", args[0], args[1])
 		}
-		return fmt.Sprintf("cDbQuery(\"SELECT COUNT(*) as count FROM \"+toString(%s))", args[0])
+		return fmt.Sprintf("cDbCount(toString(%s), nil)", args[0])
+	case "exists":
+		if len(args) > 1 {
+			return fmt.Sprintf("cDbExists(toString(%s), %s)", args[0], args[1])
+		}
+		return fmt.Sprintf("cDbExists(toString(%s), nil)", args[0])
 	}
 	return "nil"
 }
