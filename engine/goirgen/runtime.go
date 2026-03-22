@@ -95,6 +95,7 @@ func cError(code, msg string, opts ...interface{}) *CodongError {
 // --- Type Conversion ---
 
 func toFloat(v Value) float64 {
+	if v == nil { return 0 }
 	switch n := v.(type) {
 	case float64:
 		return n
@@ -111,6 +112,24 @@ func toFloat(v Value) float64 {
 		return f
 	}
 	return 0
+}
+
+// toNumber converts to number, returns nil for invalid conversions (matching eval behavior)
+func toNumber(v Value) Value {
+	if v == nil { return nil }
+	switch n := v.(type) {
+	case float64: return n
+	case int: return float64(n)
+	case int64: return float64(n)
+	case bool:
+		if n { return float64(1) }
+		return float64(0)
+	case string:
+		f, err := strconv.ParseFloat(n, 64)
+		if err != nil { return nil }
+		return f
+	}
+	return nil
 }
 
 func toString(v Value) string {
@@ -145,6 +164,16 @@ func toBool(v Value) bool {
 		return b == "true" || b == "1"
 	}
 	return true // 0, "", [], {} are all truthy in Codong
+}
+
+// toBoolV is the Codong to_bool() built-in function — returns Value for use in expressions
+func toBoolV(v Value) Value {
+	if v == nil { return false }
+	switch b := v.(type) {
+	case bool: return b
+	case string: return b == "true" || b == "1"
+	}
+	return true
 }
 
 func isTruthy(v Value) bool {
@@ -916,6 +945,59 @@ func goToValue(v interface{}) Value {
 		return m
 	}
 	return fmt.Sprintf("%v", v)
+}
+
+// --- Error Extended API ---
+
+func cErrorToJson(err Value) Value {
+	e, ok := err.(*CodongError)
+	if !ok { return nil }
+	data := map[string]interface{}{
+		"code": e.Code, "message": e.Message, "fix": e.Fix,
+		"retry": e.Retry, "docs": e.Docs, "source": e.Source,
+	}
+	jb, _ := json.Marshal(data)
+	return string(jb)
+}
+
+func cErrorToCompact(err Value) Value {
+	e, ok := err.(*CodongError)
+	if !ok { return nil }
+	return fmt.Sprintf("err_code:%s|src:%s|msg:%s|fix:%s|retry:%v", e.Code, e.Source, e.Message, e.Fix, e.Retry)
+}
+
+func cErrorSetFormat(f Value) Value {
+	// no-op in compiled mode
+	return nil
+}
+
+func cErrorHandle(err Value, handlers Value) Value {
+	e, ok := err.(*CodongError)
+	if !ok { return err }
+	hm, ok := handlers.(*CodongMap)
+	if !ok { return err }
+	if fn, ok := hm.Entries[e.Code]; ok {
+		return cCallFn(fn, err)
+	}
+	if fn, ok := hm.Entries["_"]; ok {
+		return cCallFn(fn, err)
+	}
+	return err
+}
+
+func cErrorRetry(fn Value, maxAttempts Value) Value {
+	max := int(toFloat(maxAttempts))
+	var lastErr Value
+	for i := 0; i < max; i++ {
+		result := cCallFn(fn)
+		if e, ok := result.(*CodongError); ok {
+			if e.Retry { lastErr = result; continue }
+			return result
+		}
+		return result
+	}
+	if lastErr != nil { return lastErr }
+	return nil
 }
 
 // --- LLM Module ---

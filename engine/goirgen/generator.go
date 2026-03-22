@@ -40,6 +40,13 @@ func Generate(program *parser.Program) string {
 	g.write("}")
 	g.indent--
 	g.write("}()")
+	// Forward-declare all top-level functions (enables mutual recursion)
+	for _, stmt := range program.Statements {
+		if fd, ok := stmt.(*parser.FunctionDefinition); ok {
+			g.writef("var %s func(args ...Value) Value", fd.Name.Value)
+			g.declared[fd.Name.Value] = true
+		}
+	}
 	for _, stmt := range program.Statements {
 		g.genStatement(stmt)
 	}
@@ -80,17 +87,20 @@ func (g *Generator) genStatement(stmt parser.Statement) {
 		g.declared[s.Name.Value] = true
 		g.writef("var %s Value = %s", s.Name.Value, g.genExpr(s.Value))
 	case *parser.CompoundAssignStatement:
-		target := g.genExpr(s.Target)
 		val := g.genExpr(s.Value)
-		switch s.Operator {
-		case "+=":
-			g.writef("%s = cAdd(%s, %s)", target, target, val)
-		case "-=":
-			g.writef("%s = cSub(%s, %s)", target, target, val)
-		case "*=":
-			g.writef("%s = cMul(%s, %s)", target, target, val)
-		case "/=":
-			g.writef("%s = cDiv(%s, %s)", target, target, val)
+		opFn := map[string]string{"+=": "cAdd", "-=": "cSub", "*=": "cMul", "/=": "cDiv"}[s.Operator]
+		switch t := s.Target.(type) {
+		case *parser.IndexExpression:
+			obj := g.genExpr(t.Left)
+			idx := g.genExpr(t.Index)
+			g.writef("cSetIndex(%s, %s, %s(cIndex(%s, %s), %s))", obj, idx, opFn, obj, idx, val)
+		case *parser.MemberAccessExpression:
+			obj := g.genExpr(t.Object)
+			prop := t.Property.Value
+			g.writef("cSet(%s, %q, %s(cGet(%s, %q), %s))", obj, prop, opFn, obj, prop, val)
+		default:
+			target := g.genExpr(s.Target)
+			g.writef("%s = %s(%s, %s)", target, opFn, target, val)
 		}
 	case *parser.PropertyAssignStatement:
 		g.writef("cSet(%s, %q, %s)", g.genExpr(s.Object), s.Property.Value, g.genExpr(s.Value))
@@ -132,7 +142,10 @@ func (g *Generator) genStatement(stmt parser.Statement) {
 }
 
 func (g *Generator) genFuncDef(s *parser.FunctionDefinition) {
-	g.writef("var %s func(args ...Value) Value", s.Name.Value)
+	if !g.declared[s.Name.Value] {
+		g.writef("var %s func(args ...Value) Value", s.Name.Value)
+		g.declared[s.Name.Value] = true
+	}
 	g.writef("%s = func(args ...Value) Value {", s.Name.Value)
 	g.indent++
 	// Bind parameters
@@ -422,10 +435,19 @@ func (g *Generator) genCall(e *parser.CallExpression) string {
 		return fmt.Sprintf("toString(%s)", args[0])
 	case "toFloat":
 		if len(args) > 0 {
-			return fmt.Sprintf("toFloat(%s)", args[0])
+			return fmt.Sprintf("toNumber(%s)", args[0])
 		}
 	case "toBool":
-		return fmt.Sprintf("toBool(%s)", args[0])
+		return fmt.Sprintf("toBoolV(%s)", args[0])
+	}
+
+	// Append named args as trailing map
+	if e.Named != nil && len(e.Named) > 0 {
+		namedParts := []string{}
+		for k, v := range e.Named {
+			namedParts = append(namedParts, fmt.Sprintf("%q, %s", k, g.genExpr(v)))
+		}
+		args = append(args, fmt.Sprintf("cMap(%s)", strings.Join(namedParts, ", ")))
 	}
 
 	// Generic function call — use cCallFn for dynamic dispatch
@@ -530,12 +552,34 @@ func (g *Generator) genDbCall(method string, args []string, named map[string]par
 func (g *Generator) genHttpCall(method string, args []string) string {
 	switch method {
 	case "get":
+		if len(args) > 1 {
+			return fmt.Sprintf("cHttpDo(\"GET\", toString(%s), nil, %s)", args[0], args[1])
+		}
 		return fmt.Sprintf("cHttpGet(toString(%s))", args[0])
 	case "post":
 		if len(args) > 1 {
 			return fmt.Sprintf("cHttpPost(toString(%s), %s)", args[0], args[1])
 		}
 		return fmt.Sprintf("cHttpPost(toString(%s), nil)", args[0])
+	case "put":
+		if len(args) > 1 {
+			return fmt.Sprintf("cHttpDo(\"PUT\", toString(%s), %s)", args[0], args[1])
+		}
+		return fmt.Sprintf("cHttpDo(\"PUT\", toString(%s), nil)", args[0])
+	case "delete":
+		return fmt.Sprintf("cHttpDo(\"DELETE\", toString(%s), nil)", args[0])
+	case "patch":
+		if len(args) > 1 {
+			return fmt.Sprintf("cHttpDo(\"PATCH\", toString(%s), %s)", args[0], args[1])
+		}
+		return fmt.Sprintf("cHttpDo(\"PATCH\", toString(%s), nil)", args[0])
+	case "request":
+		if len(args) >= 2 {
+			if len(args) > 2 {
+				return fmt.Sprintf("cHttpDo(toString(%s), toString(%s), %s)", args[0], args[1], args[2])
+			}
+			return fmt.Sprintf("cHttpDo(toString(%s), toString(%s), nil)", args[0], args[1])
+		}
 	}
 	return "nil"
 }
@@ -583,6 +627,20 @@ func (g *Generator) genErrorCall(method string, args []string, named map[string]
 		return fmt.Sprintf("func() bool { e := %s.(*CodongError); for e != nil { if e.Code == toString(%s) { return true }; e = e.Cause }; return false }()", args[0], args[1])
 	case "unwrap":
 		return fmt.Sprintf("func() Value { if e, ok := %s.(*CodongError); ok && e.Cause != nil { return e.Cause }; return nil }()", args[0])
+	case "to_json":
+		return fmt.Sprintf("cErrorToJson(%s)", args[0])
+	case "to_compact":
+		return fmt.Sprintf("cErrorToCompact(%s)", args[0])
+	case "set_format":
+		return fmt.Sprintf("cErrorSetFormat(%s)", args[0])
+	case "handle":
+		if len(args) >= 2 {
+			return fmt.Sprintf("cErrorHandle(%s, %s)", args[0], args[1])
+		}
+	case "retry":
+		if len(args) >= 2 {
+			return fmt.Sprintf("cErrorRetry(%s, %s)", args[0], args[1])
+		}
 	}
 	return "nil"
 }
