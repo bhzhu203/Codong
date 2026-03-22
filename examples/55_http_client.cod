@@ -1,0 +1,25 @@
+// 55 — HTTP client module
+
+// GET request
+resp = http.get("https://httpbin.org/get")
+print("status: {resp.status}")
+print("ok: {resp.ok}")
+
+// Parse JSON response
+data = resp.json()
+print("url: {data.url}")
+
+// POST with JSON body
+resp2 = http.post("https://httpbin.org/post", {name: "Ada", lang: "Codong"})
+posted = resp2.json()
+print("posted name: {posted.json.name}")
+
+// Custom headers
+resp3 = http.get("https://httpbin.org/headers", {
+    headers: {"X-Custom": "codong-test"}
+})
+h = resp3.json()
+custom = h.headers["X-Custom"]
+print("custom header sent: {custom}")
+
+print("done")

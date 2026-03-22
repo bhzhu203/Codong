@@ -687,6 +687,9 @@ func (i *Interpreter) evalIdentifier(node *parser.Identifier, env *Environment) 
 	if node.Value == "db" {
 		return dbModuleSingleton
 	}
+	if node.Value == "http" {
+		return httpModuleSingleton
+	}
 	// Check built-in functions
 	if builtin, ok := builtins[node.Value]; ok {
 		return builtin
@@ -876,6 +879,16 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 		return i.evalDbModuleMethod(prop)
 	}
 
+	// http module methods: http.get(), http.post(), etc.
+	if _, ok := obj.(*HttpModuleObject); ok {
+		return i.evalHttpModuleMethod(prop)
+	}
+
+	// http response fields: resp.status, resp.json(), resp.body, etc.
+	if resp, ok := obj.(*HttpResponseObject); ok {
+		return i.evalHttpResponseMemberAccess(resp, prop)
+	}
+
 	// server object methods: server.close()
 	if srv, ok := obj.(*ServerObject); ok {
 		if prop == "close" {
@@ -1004,6 +1017,57 @@ func (i *Interpreter) evalErrorModuleMethod(method string) Object {
 					return NULL_OBJ
 				}
 				codongerror.SetFormat(fmtStr.Value)
+				return NULL_OBJ
+			case "handle":
+				// error.handle(err, {E_CODE: handler_fn, _: default_fn})
+				if len(args) < 2 {
+					return newRuntimeError(codongerror.E1005_INVALID_ARGUMENT,
+						"error.handle requires (error, handlers_map)", "")
+				}
+				errObj, ok := args[0].(*ErrorObject)
+				if !ok {
+					return NULL_OBJ // not an error, nothing to handle
+				}
+				handlers, ok := args[1].(*MapObject)
+				if !ok {
+					return newRuntimeError(codongerror.E1002_TYPE_MISMATCH,
+						"handlers must be a map", "")
+				}
+				// Try exact code match first
+				if handler, exists := handlers.Entries[errObj.Error.Code]; exists {
+					return interp.applyFunction(handler, []Object{errObj})
+				}
+				// Try default handler _
+				if handler, exists := handlers.Entries["_"]; exists {
+					return interp.applyFunction(handler, []Object{errObj})
+				}
+				return errObj // no handler matched, return error as-is
+			case "retry":
+				// error.retry(fn, max_attempts) or error.retry(fn, max_attempts, delay_ms)
+				if len(args) < 2 {
+					return newRuntimeError(codongerror.E1005_INVALID_ARGUMENT,
+						"error.retry requires (fn, max_attempts)", "")
+				}
+				retryFn := args[0]
+				maxAttempts := 3
+				if n, ok := args[1].(*NumberObject); ok {
+					maxAttempts = int(n.Value)
+				}
+				var lastErr Object
+				for attempt := 0; attempt < maxAttempts; attempt++ {
+					result := interp.applyFunction(retryFn, []Object{})
+					if errObj, ok := result.(*ErrorObject); ok {
+						if errObj.Error.Retry {
+							lastErr = result
+							continue // retry
+						}
+						return result // non-retryable error
+					}
+					return result // success
+				}
+				if lastErr != nil {
+					return lastErr
+				}
 				return NULL_OBJ
 			}
 			return NULL_OBJ

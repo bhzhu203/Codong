@@ -1,0 +1,48 @@
+// 56 — error.handle and error.retry
+
+// error.handle — dispatch by error code
+fn process(input) {
+    if input < 0 {
+        return error.new("E_NEGATIVE", "negative input", fix: "use positive number")
+    }
+    if input == 0 {
+        return error.new("E_ZERO", "zero not allowed", fix: "use non-zero value")
+    }
+    return input * 2
+}
+
+result = process(-5)
+handled = error.handle(result, {
+    "E_NEGATIVE": fn(err) => "Caught negative: {err.fix}",
+    "E_ZERO": fn(err) => "Caught zero: {err.fix}",
+    "_": fn(err) => "Unknown error: {err.code}"
+})
+print(handled)
+
+result2 = process(0)
+handled2 = error.handle(result2, {
+    "E_NEGATIVE": fn(err) => "neg",
+    "E_ZERO": fn(err) => "zero",
+    "_": fn(err) => "other"
+})
+print(handled2)
+
+// Non-error passes through
+result3 = process(5)
+handled3 = error.handle(result3, {
+    "_": fn(err) => "error"
+})
+print("non-error: {handled3}")
+
+// error.retry — auto-retry retryable errors
+attempts = 0
+fn flaky() {
+    attempts += 1
+    if attempts < 3 {
+        return error.new("E_TEMP", "temporary failure", retry: true)
+    }
+    return "success after {attempts} attempts"
+}
+
+result4 = error.retry(flaky, 5)
+print(result4)
