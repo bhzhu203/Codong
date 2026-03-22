@@ -547,6 +547,8 @@ func cPrintV(v Value) Value {
 	return nil
 }
 
+func cDiscard(_ Value) {}
+
 func cRange(start, end float64) *CodongList {
 	var elems []Value
 	for i := start; i < end; i++ { elems = append(elems, i) }

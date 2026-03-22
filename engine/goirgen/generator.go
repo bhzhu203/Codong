@@ -20,6 +20,26 @@ func Generate(program *parser.Program) string {
 	g.output.WriteString(RuntimeSource)
 	g.output.WriteString("\n\nfunc main() {\n")
 	g.indent = 1
+	// Recover unhandled ? propagation
+	g.write("defer func() {")
+	g.indent++
+	g.write("if r := recover(); r != nil {")
+	g.indent++
+	g.write("if rs, ok := r.(*cReturnSignal); ok {")
+	g.indent++
+	g.write("if ce, ok := rs.Value.(*CodongError); ok {")
+	g.indent++
+	g.write("fmt.Fprintln(os.Stderr, ce.Error())")
+	g.write("os.Exit(1)")
+	g.indent--
+	g.write("}")
+	g.indent--
+	g.write("}")
+	g.write("panic(r)")
+	g.indent--
+	g.write("}")
+	g.indent--
+	g.write("}()")
 	for _, stmt := range program.Statements {
 		g.genStatement(stmt)
 	}
@@ -41,11 +61,10 @@ func (g *Generator) genStatement(stmt parser.Statement) {
 	switch s := stmt.(type) {
 	case *parser.ExpressionStatement:
 		expr := g.genExpr(s.Expression)
-		// Wrap standalone expressions that might be void calls
 		if strings.HasPrefix(expr, "cPrint(") || strings.HasPrefix(expr, "cPrintV(") {
 			g.write(expr)
 		} else {
-			g.writef("_ = %s", expr)
+			g.writef("cDiscard(%s)", expr)
 		}
 	case *parser.AssignStatement:
 		name := s.Name.Value
@@ -633,6 +652,20 @@ func (g *Generator) genStringInterp(e *parser.StringInterpolation) string {
 }
 
 func (g *Generator) genMemberAccess(e *parser.MemberAccessExpression) string {
+	// Module member access without call (e.g., web.json as reference)
+	if ident, ok := e.Object.(*parser.Identifier); ok {
+		switch ident.Value {
+		case "web":
+			switch e.Property.Value {
+			case "json":
+				return "func(args ...Value) Value { return cWebJson(args[0]) }"
+			case "text":
+				return "func(args ...Value) Value { return cWebText(args[0]) }"
+			case "html":
+				return "func(args ...Value) Value { return cWebHtml(args[0]) }"
+			}
+		}
+	}
 	obj := g.genExpr(e.Object)
 	prop := e.Property.Value
 	return fmt.Sprintf("cGet(%s, %q)", obj, prop)
