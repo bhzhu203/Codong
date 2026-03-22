@@ -25,12 +25,16 @@ func Generate(program *parser.Program) string {
 	g.indent++
 	g.write("if r := recover(); r != nil {")
 	g.indent++
+	g.write("if ce, ok := r.(*CodongError); ok {")
+	g.indent++
+	g.write("cPanicExit(ce)")
+	g.indent--
+	g.write("}")
 	g.write("if rs, ok := r.(*cReturnSignal); ok {")
 	g.indent++
 	g.write("if ce, ok := rs.Value.(*CodongError); ok {")
 	g.indent++
-	g.write("fmt.Fprintln(os.Stderr, ce.Error())")
-	g.write("os.Exit(1)")
+	g.write("cPanicExit(ce)")
 	g.indent--
 	g.write("}")
 	g.indent--
@@ -43,7 +47,8 @@ func Generate(program *parser.Program) string {
 	// Forward-declare all top-level functions (enables mutual recursion)
 	for _, stmt := range program.Statements {
 		if fd, ok := stmt.(*parser.FunctionDefinition); ok {
-			g.writef("var %s func(args ...Value) Value", fd.Name.Value)
+			goName := escapeGoName(fd.Name.Value)
+			g.writef("var %s func(args ...Value) Value", goName)
 			g.declared[fd.Name.Value] = true
 		}
 	}
@@ -77,17 +82,19 @@ func (g *Generator) genStatement(stmt parser.Statement) {
 		}
 	case *parser.AssignStatement:
 		name := s.Name.Value
+		goName := escapeGoName(name)
 		if name == "_" {
 			g.writef("_ = %s", g.genExpr(s.Value))
 		} else if g.declared[name] {
-			g.writef("%s = %s", name, g.genExpr(s.Value))
+			g.writef("%s = %s", goName, g.genExpr(s.Value))
 		} else {
 			g.declared[name] = true
-			g.writef("var %s Value = %s; _ = %s", name, g.genExpr(s.Value), name)
+			g.writef("var %s Value = %s; _ = %s", goName, g.genExpr(s.Value), goName)
 		}
 	case *parser.ConstStatement:
 		g.declared[s.Name.Value] = true
-		g.writef("var %s Value = %s", s.Name.Value, g.genExpr(s.Value))
+		goName := escapeGoName(s.Name.Value)
+		g.writef("var %s Value = %s", goName, g.genExpr(s.Value))
 	case *parser.CompoundAssignStatement:
 		val := g.genExpr(s.Value)
 		opFn := map[string]string{"+=": "cAdd", "-=": "cSub", "*=": "cMul", "/=": "cDiv"}[s.Operator]
@@ -144,28 +151,101 @@ func (g *Generator) genStatement(stmt parser.Statement) {
 }
 
 func (g *Generator) genFuncDef(s *parser.FunctionDefinition) {
+	goName := escapeGoName(s.Name.Value)
 	if !g.declared[s.Name.Value] {
-		g.writef("var %s func(args ...Value) Value", s.Name.Value)
+		g.writef("var %s func(args ...Value) Value", goName)
 		g.declared[s.Name.Value] = true
 	}
-	g.writef("%s = func(args ...Value) Value {", s.Name.Value)
+	// Named function definitions create isolated scope (no closure capture of assignments)
+	outerDeclared := g.declared
+	g.declared = map[string]bool{}
+	// Copy param names as declared
+	for _, p := range s.Params { g.declared[p.Name] = true }
+	// Also copy outer function names so they can be called
+	for k := range outerDeclared { g.declared[k] = true }
+	g.writef("%s = func(args ...Value) Value {", goName)
 	g.indent++
+	// Pre-declare all new variables in function body
+	bodyVars := collectAssignedVars(s.Body)
+	for _, p := range s.Params { delete(bodyVars, p.Name) }
+	for v := range bodyVars {
+		gn := escapeGoName(v)
+		g.writef("var %s Value; _ = %s", gn, gn)
+		g.declared[v] = true
+	}
+	// Extract named args map (last arg if it's a CodongMap with named params)
+	g.write("var _named *CodongMap; if len(args) > 0 { if _nm, ok := args[len(args)-1].(*CodongMap); ok { _named = _nm } }; _ = _named")
 	// Bind parameters
 	for i, p := range s.Params {
-		name := p.Name
+		name := escapeGoName(p.Name)
+		origName := p.Name
 		if s.Defaults != nil {
-			if defExpr, ok := s.Defaults[name]; ok {
-				g.writef("var %s Value; if len(args) > %d { %s = args[%d] } else { %s = %s }; _ = %s",
-					name, i, name, i, name, g.genExpr(defExpr), name)
+			if defExpr, ok := s.Defaults[origName]; ok {
+				g.writef("var %s Value; if len(args) > %d { %s = args[%d] } else { %s = %s }; if _named != nil { if _nv, ok := _named.Entries[%q]; ok { %s = _nv } }; _ = %s",
+					name, i, name, i, name, g.genExpr(defExpr), origName, name, name)
 				continue
 			}
 		}
-		g.writef("var %s Value; if len(args) > %d { %s = args[%d] }; _ = %s", name, i, name, i, name)
+		g.writef("var %s Value; if len(args) > %d { %s = args[%d] }; if _named != nil { if _nv, ok := _named.Entries[%q]; ok { %s = _nv } }; _ = %s", name, i, name, i, origName, name, name)
 	}
 	g.genBlock(s.Body)
 	g.write("return nil")
 	g.indent--
 	g.write("}")
+	// Restore outer declared state
+	g.declared = outerDeclared
+}
+
+// collectAssignedVars finds all variable names assigned in a block (recursively).
+func collectAssignedVars(block *parser.BlockStatement) map[string]bool {
+	vars := map[string]bool{}
+	if block == nil { return vars }
+	collectVarsFromStmts(block.Statements, vars)
+	return vars
+}
+
+func collectVarsFromStmts(stmts []parser.Statement, vars map[string]bool) {
+	for _, stmt := range stmts {
+		switch s := stmt.(type) {
+		case *parser.AssignStatement:
+			vars[s.Name.Value] = true
+		case *parser.ConstStatement:
+			vars[s.Name.Value] = true
+		case *parser.IfStatement:
+			if s.Consequence != nil { collectVarsFromStmts(s.Consequence.Statements, vars) }
+			if alt, ok := s.Alternative.(*parser.BlockStatement); ok {
+				collectVarsFromStmts(alt.Statements, vars)
+			}
+			if alt, ok := s.Alternative.(*parser.IfStatement); ok {
+				collectVarsFromIf(alt, vars)
+			}
+		case *parser.ForInStatement:
+			vars[s.Variable.Value] = true
+			if s.Body != nil { collectVarsFromStmts(s.Body.Statements, vars) }
+		case *parser.WhileStatement:
+			if s.Body != nil { collectVarsFromStmts(s.Body.Statements, vars) }
+		case *parser.BlockStatement:
+			collectVarsFromStmts(s.Statements, vars)
+		case *parser.TryCatchStatement:
+			if s.Try != nil { collectVarsFromStmts(s.Try.Statements, vars) }
+			if s.Catch != nil { collectVarsFromStmts(s.Catch.Statements, vars) }
+			vars[s.CatchVar.Value] = true
+		case *parser.MatchStatement:
+			for _, mc := range s.Cases {
+				if mc.BodyBlock != nil { collectVarsFromStmts(mc.BodyBlock.Statements, vars) }
+			}
+		}
+	}
+}
+
+func collectVarsFromIf(s *parser.IfStatement, vars map[string]bool) {
+	if s.Consequence != nil { collectVarsFromStmts(s.Consequence.Statements, vars) }
+	if alt, ok := s.Alternative.(*parser.BlockStatement); ok {
+		collectVarsFromStmts(alt.Statements, vars)
+	}
+	if alt, ok := s.Alternative.(*parser.IfStatement); ok {
+		collectVarsFromIf(alt, vars)
+	}
 }
 
 func (g *Generator) genBlock(block *parser.BlockStatement) {
@@ -203,13 +283,14 @@ func (g *Generator) genIf(s *parser.IfStatement) {
 func (g *Generator) genForIn(s *parser.ForInStatement) {
 	iter := g.genExpr(s.Iterable)
 	varName := s.Variable.Value
+	goVarName := escapeGoName(varName)
 	if !g.declared[varName] {
-		g.writef("var %s Value", varName)
+		g.writef("var %s Value", goVarName)
 		g.declared[varName] = true
 	}
 	g.writef("for _, _item := range toList(%s).Elements {", iter)
 	g.indent++
-	g.writef("%s = _item", varName)
+	g.writef("%s = _item", goVarName)
 	g.genBlock(s.Body)
 	g.indent--
 	g.write("}")
@@ -261,8 +342,9 @@ func (g *Generator) genMatch(s *parser.MatchStatement) {
 
 func (g *Generator) genTryCatch(s *parser.TryCatchStatement) {
 	catchVar := s.CatchVar.Value
+	goVar := escapeGoName(catchVar)
 	if !g.declared[catchVar] {
-		g.writef("var %s Value", catchVar)
+		g.writef("var %s Value", goVar)
 		g.declared[catchVar] = true
 	}
 	g.write("func() {")
@@ -271,17 +353,28 @@ func (g *Generator) genTryCatch(s *parser.TryCatchStatement) {
 	g.indent++
 	g.writef("if _r := recover(); _r != nil {")
 	g.indent++
+	// Catch raw *CodongError panics (e.g., division by zero, stack overflow)
+	g.writef("if _ce, ok := _r.(*CodongError); ok {")
+	g.indent++
+	g.writef("%s = _ce", goVar)
+	g.genBlock(s.Catch)
+	g.write("return")
+	g.indent--
+	g.write("}")
+	// Catch cReturnSignal-wrapped errors (e.g., ? operator)
 	g.writef("if _rs, ok := _r.(*cReturnSignal); ok {")
 	g.indent++
 	g.writef("if _ce, ok := _rs.Value.(*CodongError); ok {")
 	g.indent++
-	g.writef("%s = _ce", catchVar)
-	// Generate catch body
+	g.writef("%s = _ce", goVar)
 	g.genBlock(s.Catch)
+	g.write("return")
 	g.indent--
 	g.write("}")
 	g.indent--
 	g.write("}")
+	// Re-panic for non-error panics
+	g.write("panic(_r)")
 	g.indent--
 	g.write("}")
 	g.indent--
@@ -360,6 +453,23 @@ func (g *Generator) genExpr(expr parser.Expression) string {
 	return "nil"
 }
 
+var goReserved = map[string]bool{
+	"break": true, "case": true, "chan": true, "const": true, "continue": true,
+	"default": true, "defer": true, "else": true, "fallthrough": true, "for": true,
+	"func": true, "go": true, "goto": true, "if": true, "import": true,
+	"interface": true, "map": true, "package": true, "range": true, "return": true,
+	"select": true, "struct": true, "switch": true, "type": true, "var": true,
+	"string": true, "int": true, "float64": true, "bool": true, "error": true,
+	"len": true, "cap": true, "make": true, "new": true, "append": true,
+	"copy": true, "delete": true, "panic": true, "recover": true, "close": true,
+	"nil": true, "true": true, "false": true, "iota": true,
+}
+
+func escapeGoName(name string) string {
+	if goReserved[name] { return "_" + name }
+	return name
+}
+
 func (g *Generator) genIdentifier(name string) string {
 	switch name {
 	case "print":
@@ -383,7 +493,7 @@ func (g *Generator) genIdentifier(name string) string {
 	case "_":
 		return "_blank"
 	}
-	return name
+	return escapeGoName(name)
 }
 
 func (g *Generator) genInfix(op, left, right string) string {
@@ -424,6 +534,19 @@ func (g *Generator) genCall(e *parser.CallExpression) string {
 		return g.genMethodCall(member, e.Arguments, e.Named)
 	}
 
+	// IIFE: (fn(){...})() — directly invoke the function literal
+	if fl, ok := e.Function.(*parser.FunctionLiteral); ok {
+		fnCode := g.genFuncLiteral(fl)
+		args := make([]string, len(e.Arguments))
+		for i, a := range e.Arguments {
+			args[i] = g.genExpr(a)
+		}
+		if len(args) == 0 {
+			return fmt.Sprintf("(%s)()", fnCode)
+		}
+		return fmt.Sprintf("(%s)(%s)", fnCode, strings.Join(args, ", "))
+	}
+
 	fn := g.genExpr(e.Function)
 	args := make([]string, len(e.Arguments))
 	for i, a := range e.Arguments {
@@ -433,6 +556,9 @@ func (g *Generator) genCall(e *parser.CallExpression) string {
 	// Built-in functions — direct call (not cCallFn)
 	switch fn {
 	case "cPrint":
+		if len(args) > 1 {
+			return fmt.Sprintf("cPrintMultiErr(%d)", len(args))
+		}
 		if len(args) > 0 {
 			return fmt.Sprintf("cPrintV(%s)", args[0])
 		}
@@ -485,7 +611,7 @@ func (g *Generator) genMethodCall(member *parser.MemberAccessExpression, argumen
 		case "db":
 			return g.genDbCall(method, args, named)
 		case "http":
-			return g.genHttpCall(method, args)
+			return g.genHttpCall(method, args, named)
 		case "error":
 			return g.genErrorCall(method, args, named)
 		case "llm":
@@ -537,6 +663,9 @@ func (g *Generator) genDbCall(method string, args []string, named map[string]par
 	case "disconnect":
 		return "cDbDisconnectRT()"
 	case "find":
+		if len(args) > 2 {
+			return fmt.Sprintf("cDbFindOpts(toString(%s), %s, %s)", args[0], args[1], args[2])
+		}
 		if len(args) > 1 {
 			return fmt.Sprintf("cDbFind(toString(%s), %s)", args[0], args[1])
 		}
@@ -567,18 +696,64 @@ func (g *Generator) genDbCall(method string, args []string, named map[string]par
 			return fmt.Sprintf("cDbExists(toString(%s), %s)", args[0], args[1])
 		}
 		return fmt.Sprintf("cDbExists(toString(%s), nil)", args[0])
+	case "ping":
+		return "cDbPing()"
+	case "stats":
+		return "cDbStats()"
+	case "create_table":
+		return fmt.Sprintf("cDbCreateTable(toString(%s), %s)", args[0], args[1])
+	case "create_index":
+		if len(args) > 1 {
+			return fmt.Sprintf("cDbCreateIndex(toString(%s), %s)", args[0], args[1])
+		}
+	case "insert_batch":
+		return fmt.Sprintf("cDbInsertBatch(toString(%s), %s)", args[0], args[1])
+	case "upsert":
+		return fmt.Sprintf("cDbUpsert(toString(%s), %s, %s)", args[0], args[1], args[2])
+	case "query_one":
+		if len(args) > 1 {
+			return fmt.Sprintf("cDbQueryOne(toString(%s), toList(%s).Elements...)", args[0], args[1])
+		}
+		return fmt.Sprintf("cDbQueryOne(toString(%s))", args[0])
+	case "transaction":
+		return fmt.Sprintf("cDbTransaction(%s)", args[0])
+	case "sort":
+		if len(args) > 2 {
+			return fmt.Sprintf("cDbSort(toString(%s), %s, toString(%s))", args[0], args[1], args[2])
+		}
+		if len(args) > 1 {
+			return fmt.Sprintf("cDbSort(toString(%s), %s, \"asc\")", args[0], args[1])
+		}
 	}
 	return "nil"
 }
 
-func (g *Generator) genHttpCall(method string, args []string) string {
+func (g *Generator) genHttpCall(method string, args []string, named map[string]parser.Expression) string {
+	// Build named args map if present
+	namedArg := ""
+	if named != nil && len(named) > 0 {
+		namedParts := []string{}
+		for k, v := range named {
+			namedParts = append(namedParts, fmt.Sprintf("%q, %s", k, g.genExpr(v)))
+		}
+		namedArg = fmt.Sprintf("cMap(%s)", strings.Join(namedParts, ", "))
+	}
 	switch method {
 	case "get":
+		if namedArg != "" {
+			return fmt.Sprintf("cHttpDo(\"GET\", toString(%s), nil, %s)", args[0], namedArg)
+		}
 		if len(args) > 1 {
 			return fmt.Sprintf("cHttpDo(\"GET\", toString(%s), nil, %s)", args[0], args[1])
 		}
 		return fmt.Sprintf("cHttpGet(toString(%s))", args[0])
 	case "post":
+		if namedArg != "" {
+			if len(args) > 1 {
+				return fmt.Sprintf("cHttpDo(\"POST\", toString(%s), %s, %s)", args[0], args[1], namedArg)
+			}
+			return fmt.Sprintf("cHttpDo(\"POST\", toString(%s), nil, %s)", args[0], namedArg)
+		}
 		if len(args) > 1 {
 			return fmt.Sprintf("cHttpPost(toString(%s), %s)", args[0], args[1])
 		}
@@ -596,11 +771,8 @@ func (g *Generator) genHttpCall(method string, args []string) string {
 		}
 		return fmt.Sprintf("cHttpDo(\"PATCH\", toString(%s), nil)", args[0])
 	case "request":
-		if len(args) >= 2 {
-			if len(args) > 2 {
-				return fmt.Sprintf("cHttpDo(toString(%s), toString(%s), %s)", args[0], args[1], args[2])
-			}
-			return fmt.Sprintf("cHttpDo(toString(%s), toString(%s), nil)", args[0], args[1])
+		if len(args) >= 1 {
+			return fmt.Sprintf("cHttpRequest(%s)", args[0])
 		}
 	}
 	return "nil"
@@ -663,37 +835,62 @@ func (g *Generator) genErrorCall(method string, args []string, named map[string]
 		if len(args) >= 2 {
 			return fmt.Sprintf("cErrorRetry(%s, %s)", args[0], args[1])
 		}
+	case "from_json":
+		if len(args) >= 1 {
+			return fmt.Sprintf("cErrorFromJson(%s)", args[0])
+		}
+	case "from_compact":
+		if len(args) >= 1 {
+			return fmt.Sprintf("cErrorFromCompact(%s)", args[0])
+		}
 	}
 	return "nil"
 }
 
 func (g *Generator) genFuncLiteral(e *parser.FunctionLiteral) string {
-	params := g.genParams(e.Params)
-	_ = params
-	var body strings.Builder
-	body.WriteString("func(args ...Value) Value {\n")
+	// Save current output and declared state
+	savedOutput := g.output
+	savedIndent := g.indent
+	outerDeclared := g.declared
+	g.declared = map[string]bool{}
+	// Copy outer scope for closure capture
+	for k := range outerDeclared { g.declared[k] = true }
+	for _, p := range e.Params { g.declared[p.Name] = true }
+	g.output = strings.Builder{}
+	g.output.WriteString("func(args ...Value) Value {\n")
 	g.indent++
+	// Pre-declare variables that are new to this function
+	if e.Body != nil {
+		bodyVars := collectAssignedVars(e.Body)
+		for _, p := range e.Params { delete(bodyVars, p.Name) }
+		for v := range bodyVars {
+			if outerDeclared[v] { continue } // captured from outer scope
+			gn := escapeGoName(v)
+			g.writef("var %s Value; _ = %s", gn, gn)
+			g.declared[v] = true
+		}
+	}
 	for i, p := range e.Params {
-		name := p.Name
-		body.WriteString(strings.Repeat("\t", g.indent))
-		body.WriteString(fmt.Sprintf("var %s Value; if len(args) > %d { %s = args[%d] }; _ = %s\n", name, i, name, i, name))
+		name := escapeGoName(p.Name)
+		g.writef("var %s Value; if len(args) > %d { %s = args[%d] }; _ = %s", name, i, name, i, name)
 	}
 	if e.ArrowExpr != nil {
-		body.WriteString(strings.Repeat("\t", g.indent))
-		body.WriteString(fmt.Sprintf("return %s\n", g.genExpr(e.ArrowExpr)))
+		g.writef("return %s", g.genExpr(e.ArrowExpr))
 	} else if e.Body != nil {
 		for _, stmt := range e.Body.Statements {
-			body.WriteString(strings.Repeat("\t", g.indent))
-			body.WriteString(g.genStatementStr(stmt))
-			body.WriteString("\n")
+			g.genStatement(stmt)
 		}
-		body.WriteString(strings.Repeat("\t", g.indent))
-		body.WriteString("return nil\n")
+		g.write("return nil")
 	}
 	g.indent--
-	body.WriteString(strings.Repeat("\t", g.indent))
-	body.WriteString("}")
-	return body.String()
+	// Write closing brace without trailing newline so it can be used inline
+	g.output.WriteString(strings.Repeat("\t", g.indent))
+	g.output.WriteString("}")
+	result := g.output.String()
+	g.output = savedOutput
+	g.indent = savedIndent
+	g.declared = outerDeclared
+	return result
 }
 
 func (g *Generator) genStatementStr(stmt parser.Statement) string {
@@ -707,9 +904,11 @@ func (g *Generator) genStatementStr(stmt parser.Statement) string {
 	case *parser.ExpressionStatement:
 		return g.genExpr(s.Expression)
 	case *parser.AssignStatement:
-		return fmt.Sprintf("var %s Value = %s", s.Name.Value, g.genExpr(s.Value))
+		return fmt.Sprintf("var %s Value = %s; _ = %s", s.Name.Value, g.genExpr(s.Value), s.Name.Value)
 	case *parser.CompoundAssignStatement:
-		return fmt.Sprintf("%s %s %s", g.genExpr(s.Target), s.Operator, g.genExpr(s.Value))
+		opFn := map[string]string{"+=": "cAdd", "-=": "cSub", "*=": "cMul", "/=": "cDiv"}[s.Operator]
+		target := g.genExpr(s.Target)
+		return fmt.Sprintf("%s = %s(%s, %s)", target, opFn, target, g.genExpr(s.Value))
 	case *parser.PropertyAssignStatement:
 		return fmt.Sprintf("cSet(%s, %q, %s)", g.genExpr(s.Object), s.Property.Value, g.genExpr(s.Value))
 	}

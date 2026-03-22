@@ -55,7 +55,26 @@ func compile(source string) (string, []string) {
 	p := parser.New(l)
 	program := p.ParseProgram()
 	if len(p.Errors()) > 0 {
-		return "", p.Errors()
+		// Wrap parse errors in Codong error JSON format
+		var jsonErrors []string
+		for _, e := range p.Errors() {
+			ce := struct {
+				Code    string `json:"code"`
+				Error   string `json:"error"`
+				Message string `json:"message"`
+				Fix     string `json:"fix"`
+				Retry   bool   `json:"retry"`
+			}{
+				Code:    "E1001_SYNTAX_ERROR",
+				Error:   "runtime",
+				Message: e,
+				Fix:     "check your syntax",
+				Retry:   false,
+			}
+			jb, _ := json.Marshal(ce)
+			jsonErrors = append(jsonErrors, string(jb))
+		}
+		return "", jsonErrors
 	}
 	goSource := goirgen.Generate(program)
 	return goSource, nil
@@ -130,6 +149,14 @@ require modernc.org/sqlite v1.47.0
 				fmt.Print(codongErr) // to stdout for test compatibility
 				return fmt.Errorf("exit status 1")
 			}
+			// Check for runtime panics and convert to Codong errors
+			if strings.Contains(stderr, "goroutine") && strings.Contains(stderr, "panic") {
+				codongErr := translateRuntimePanic(stderr)
+				if codongErr != "" {
+					fmt.Print(codongErr)
+					return fmt.Errorf("exit status 1")
+				}
+			}
 			// Runtime error — pass through
 			fmt.Fprint(os.Stderr, stderrBuf.String())
 			return err
@@ -152,6 +179,41 @@ require modernc.org/sqlite v1.47.0
 	}
 	fmt.Fprintf(os.Stderr, "Built: %s\n", outputPath)
 	return nil
+}
+
+// translateRuntimePanic converts Go runtime panics to Codong error format.
+func translateRuntimePanic(stderr string) string {
+	type codongError struct {
+		Code    string `json:"code"`
+		Error   string `json:"error"`
+		Message string `json:"message"`
+		Fix     string `json:"fix"`
+		Retry   bool   `json:"retry"`
+	}
+
+	var ce codongError
+	ce.Error = "runtime"
+	ce.Retry = false
+
+	switch {
+	case strings.Contains(stderr, "interface conversion") && strings.Contains(stderr, "func("):
+		ce.Code = "E1004_UNDEFINED_FUNC"
+		ce.Message = "attempted to call a non-function value"
+		ce.Fix = "ensure the value is a function before calling it"
+	case strings.Contains(stderr, "runtime: goroutine stack exceeds"):
+		ce.Code = "E9002_STACK_OVERFLOW"
+		ce.Message = "maximum call stack exceeded"
+		ce.Fix = "check for infinite recursion or add a base case"
+	case strings.Contains(stderr, "index out of range"):
+		ce.Code = "E1005_INDEX_ERROR"
+		ce.Message = "list index out of bounds"
+		ce.Fix = "check the list length before accessing by index"
+	default:
+		return ""
+	}
+
+	jsonBytes, _ := json.Marshal(ce)
+	return string(jsonBytes) + "\n"
 }
 
 // translateGoError converts Go compiler errors to Codong error format.
@@ -210,9 +272,9 @@ func translateGoError(stderr string) string {
 
 		case strings.Contains(msg, "declared and not used:"):
 			varName := strings.TrimSpace(strings.TrimPrefix(msg, "declared and not used:"))
-			ce.Code = "E1001_SYNTAX_ERROR"
-			ce.Message = fmt.Sprintf("cannot assign to const '%s'", varName)
-			ce.Fix = "remove const declaration or use a different variable name"
+			ce.Code = "E1003_UNDEFINED_VAR"
+			ce.Message = fmt.Sprintf("variable '%s' is declared but not used", varName)
+			ce.Fix = fmt.Sprintf("use the variable %s or remove it", varName)
 
 		case strings.Contains(msg, "len (built-in) must be called"):
 			ce.Code = "E1004_UNDEFINED_FUNC"

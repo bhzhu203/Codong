@@ -50,6 +50,7 @@ type CodongError struct {
 	Retry   bool
 	Docs    string
 	Source  string
+	Context *CodongMap
 	Cause   *CodongError
 	IsError bool // always true, used for type checking
 }
@@ -80,14 +81,24 @@ func cMap(kvs ...interface{}) *CodongMap {
 func cError(code, msg string, opts ...interface{}) *CodongError {
 	e := &CodongError{Code: code, Message: msg, Source: "codong", IsError: true}
 	for i := 0; i+1 < len(opts); i += 2 {
-		switch opts[i].(string) {
+		key, ok := opts[i].(string)
+		if !ok { continue }
+		switch key {
 		case "fix":
 			e.Fix = toString(opts[i+1])
 		case "retry":
 			e.Retry = toBool(opts[i+1])
 		case "docs":
 			e.Docs = toString(opts[i+1])
+		case "context":
+			if cm, ok := opts[i+1].(*CodongMap); ok {
+				e.Context = cm
+			}
 		}
+	}
+	// Auto-generate docs URL if not explicitly set
+	if e.Docs == "" && e.Code != "" {
+		e.Docs = "https://codong.org/errors/" + e.Code
 	}
 	return e
 }
@@ -151,6 +162,8 @@ func toString(v Value) string {
 		return "{...}"
 	case *CodongError:
 		return s.Error()
+	case func(...Value) Value:
+		return "fn (...)"
 	}
 	return fmt.Sprintf("%v", v)
 }
@@ -213,6 +226,18 @@ func typeOf(v Value) string {
 
 func toList(v Value) *CodongList {
 	if l, ok := v.(*CodongList); ok { return l }
+	// Maps iterate as list of keys
+	if m, ok := v.(*CodongMap); ok {
+		elems := make([]Value, len(m.Order))
+		for i, k := range m.Order { elems[i] = k }
+		return &CodongList{Elements: elems}
+	}
+	// Strings iterate as list of characters
+	if s, ok := v.(string); ok {
+		elems := make([]Value, len(s))
+		for i, ch := range s { elems[i] = string(ch) }
+		return &CodongList{Elements: elems}
+	}
 	return &CodongList{}
 }
 
@@ -281,6 +306,9 @@ func cGet(obj Value, key string) Value {
 		case "retry": return o.Retry
 		case "docs": return o.Docs
 		case "source": return o.Source
+		case "context":
+			if o.Context != nil { return o.Context }
+			return nil
 		}
 	}
 	return nil
@@ -306,6 +334,10 @@ func cIndex(obj Value, idx Value) Value {
 		if s, ok := idx.(string); ok {
 			if v, exists := o.Entries[s]; exists { return v; _ = ok }
 		}
+	case string:
+		i := int(toFloat(idx))
+		if i < 0 { i = len(o) + i }
+		if i >= 0 && i < len(o) { return string(o[i]) }
 	}
 	return nil
 }
@@ -315,7 +347,8 @@ func cSetIndex(obj Value, idx Value, val Value) {
 	case *CodongList:
 		i := int(toFloat(idx))
 		if i < 0 { i = len(o.Elements) + i }
-		if i >= 0 && i < len(o.Elements) { o.Elements[i] = val }
+		if i >= 0 && i < len(o.Elements) { o.Elements[i] = val; return }
+		panic(cError("E1005_INDEX_ERROR", fmt.Sprintf("list index %d out of bounds (length %d)", int(toFloat(idx)), len(o.Elements))))
 	case *CodongMap:
 		if s, ok := idx.(string); ok { cSet(obj, s, val) }
 	}
@@ -643,7 +676,23 @@ func cPrintV(v Value) Value {
 	return nil
 }
 
+func cPrintMultiErr(count int) Value {
+	e := cError("E1005_ARG_ERROR", fmt.Sprintf("print() takes exactly 1 argument (%d given)", count), "fix", "use string interpolation: print(\"${a} ${b}\")")
+	cPanicExit(e)
+	return nil
+}
+
 func cDiscard(_ Value) {}
+
+func cPanicExit(ce *CodongError) {
+	data := map[string]interface{}{
+		"code": ce.Code, "error": "runtime", "message": ce.Message,
+		"fix": ce.Fix, "retry": ce.Retry,
+	}
+	jb, _ := json.Marshal(data)
+	fmt.Println(string(jb))
+	os.Exit(1)
+}
 
 func cRange(start, end float64) *CodongList {
 	var elems []Value
@@ -659,6 +708,14 @@ func cPropagate(v Value) Value {
 	if e, ok := v.(*CodongError); ok {
 		panic(&cReturnSignal{Value: e})
 	}
+	// Check for map responses with an "error" field (e.g., HTTP responses)
+	if m, ok := v.(*CodongMap); ok {
+		if errVal, ok := m.Entries["error"]; ok {
+			if e, ok := errVal.(*CodongError); ok {
+				panic(&cReturnSignal{Value: e})
+			}
+		}
+	}
 	return v
 }
 
@@ -668,6 +725,7 @@ var cWebRoutes []struct{ method, pattern string; handler func(...Value) Value }
 var cWebServers []*struct{ port int }
 var cWebMiddlewares []Value
 var cWebMiddlewareNS = &CodongMap{Entries: map[string]interface{}{"_type": "web_middleware_ns"}, Order: []string{"_type"}}
+var cWebAuthContext Value // stores auth context from middleware for current request
 
 func cWebRoute(method string, pattern Value, handler Value) Value {
 	p := toString(pattern)
@@ -737,12 +795,22 @@ func cWebServe(port int) Value {
 			ip := req.RemoteAddr
 			if fwd := req.Header.Get("X-Forwarded-For"); fwd != "" { ip = fwd }
 			cSet(reqMap, "ip", ip)
-			// Build context from auth middleware headers
+			// Build context from auth middleware
 			ctxMap := cMap()
+			if cWebAuthContext != nil {
+				if authMap, ok := cWebAuthContext.(*CodongMap); ok {
+					for _, k := range authMap.Order {
+						cSet(ctxMap, k, authMap.Entries[k])
+					}
+				}
+			}
+			// Also check headers for backward compat
 			for k, v := range req.Header {
 				if strings.HasPrefix(k, "X-Codong-Auth-") {
 					ctxKey := strings.ToLower(k[len("X-Codong-Auth-"):])
-					cSet(ctxMap, ctxKey, v[0])
+					if _, exists := ctxMap.Entries[ctxKey]; !exists {
+						cSet(ctxMap, ctxKey, v[0])
+					}
 				}
 			}
 			cSet(reqMap, "context", ctxMap)
@@ -814,11 +882,14 @@ func cWebServe(port int) Value {
 						fmt.Fprint(w, "{\"error\":\"unauthorized\"}")
 						return
 					}
-					// Store auth context in request header for handler access
+					// Store auth context for handler access
+					cWebAuthContext = result
+					// Also store in headers for backward compat
 					if rm, ok := result.(*CodongMap); ok {
 						for k, v := range rm.Entries { r.Header.Set("X-Codong-Auth-"+k, toString(v)) }
 					}
 					prev.ServeHTTP(w, r)
+					cWebAuthContext = nil
 				})
 			}
 		}
@@ -841,18 +912,22 @@ func writeResponse(w http.ResponseWriter, req *http.Request, result Value) {
 	if m, ok := result.(*CodongMap); ok {
 		rt := ""; if t, ok := m.Entries["_type"].(string); ok { rt = t }
 		status := 200; if s, ok := m.Entries["status"].(float64); ok { status = int(s) }
+		// Apply custom headers before status/body
+		if hdrs, ok := m.Entries["headers"].(*CodongMap); ok {
+			for k, v := range hdrs.Entries { w.Header().Set(k, toString(v)) }
+		}
 		switch rt {
 		case "json":
-			w.Header().Set("Content-Type", "application/json")
+			if w.Header().Get("Content-Type") == "" { w.Header().Set("Content-Type", "application/json") }
 			w.WriteHeader(status)
 			jb, _ := json.Marshal(valueToGo(m.Entries["data"]))
 			w.Write(jb)
 		case "text":
-			w.Header().Set("Content-Type", "text/plain")
+			if w.Header().Get("Content-Type") == "" { w.Header().Set("Content-Type", "text/plain") }
 			w.WriteHeader(status)
 			fmt.Fprint(w, toString(m.Entries["body"]))
 		case "html":
-			w.Header().Set("Content-Type", "text/html")
+			if w.Header().Get("Content-Type") == "" { w.Header().Set("Content-Type", "text/html") }
 			w.WriteHeader(status)
 			fmt.Fprint(w, toString(m.Entries["body"]))
 		case "redirect":
@@ -860,11 +935,7 @@ func writeResponse(w http.ResponseWriter, req *http.Request, result Value) {
 			http.Redirect(w, req, url, status)
 			return
 		default:
-			// Apply custom headers if present
-			if hdrs, ok := m.Entries["headers"].(*CodongMap); ok {
-				for k, v := range hdrs.Entries { w.Header().Set(k, toString(v)) }
-			}
-			w.Header().Set("Content-Type", "application/json")
+			if w.Header().Get("Content-Type") == "" { w.Header().Set("Content-Type", "application/json") }
 			w.WriteHeader(200)
 			jb, _ := json.Marshal(valueToGo(result))
 			w.Write(jb)
@@ -931,7 +1002,19 @@ func cDbConnect(dsn string) Value {
 	if cleanDSN != "" && !strings.Contains(cleanDSN, "codong-mem") {
 		cDB.Exec("PRAGMA journal_mode=WAL")
 	}
+	return cMap("_type", "db_connection", "status", "connected", "dsn", dsn)
+}
+
+func cDbPing() Value {
+	if cDB == nil { return false }
+	if err := cDB.Ping(); err != nil { return false }
 	return true
+}
+
+func cDbStats() Value {
+	if cDB == nil { return cError("E2002", "no database connection") }
+	stats := cDB.Stats()
+	return cMap("open_connections", float64(stats.OpenConnections), "in_use", float64(stats.InUse), "idle", float64(stats.Idle))
 }
 
 func cDbDisconnectRT() Value {
@@ -950,12 +1033,12 @@ func cDbQuery(sqlStr string, params ...Value) Value {
 	for i, p := range params { args[i] = valueToGo(p) }
 	trimmed := strings.TrimSpace(strings.ToUpper(sqlStr))
 	if strings.HasPrefix(trimmed, "SELECT") {
-		rows, err := cDB.Query(sqlStr, args...)
+		rows, err := cDbQueryRows(sqlStr, args...)
 		if err != nil { return cError("E2003", err.Error()) }
 		defer rows.Close()
 		return rowsToList(rows)
 	}
-	result, err := cDB.Exec(sqlStr, args...)
+	result, err := cDbExec(sqlStr, args...)
 	if err != nil { return cError("E2003", err.Error()) }
 	aff, _ := result.RowsAffected()
 	lid, _ := result.LastInsertId()
@@ -970,7 +1053,7 @@ func cDbCount(table string, filterVal Value) Value {
 	q := "SELECT COUNT(*) FROM " + table
 	if where != "" { q += " WHERE " + where }
 	var count int64
-	if err := cDB.QueryRow(q, args...).Scan(&count); err != nil { return cError("E2003", err.Error()) }
+	if err := cDbQueryRowOne(q, args...).Scan(&count); err != nil { return cError("E2003", err.Error()) }
 	return float64(count)
 }
 
@@ -990,10 +1073,38 @@ func cDbInsert(table string, dataVal Value) Value {
 		vals = append(vals, valueToGo(data.Entries[k]))
 	}
 	q := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), strings.Join(phs, ","))
-	r, err := cDB.Exec(q, vals...)
+	r, err := cDbExec(q, vals...)
 	if err != nil { return cError("E2003", err.Error()) }
 	id, _ := r.LastInsertId()
-	return cMap("id", float64(id))
+	// Return the inserted row (include original data + id)
+	result := cMap()
+	cSet(result, "id", float64(id))
+	for _, k := range data.Order {
+		cSet(result, k, data.Entries[k])
+	}
+	return result
+}
+
+func cDbInsertBatch(table string, listVal Value) Value {
+	list, ok := listVal.(*CodongList)
+	if !ok { return cError("E2003", "insert_batch requires a list") }
+	results := make([]Value, 0, len(list.Elements))
+	for _, item := range list.Elements {
+		r := cDbInsert(table, item)
+		if _, ok := r.(*CodongError); ok { return r }
+		results = append(results, r)
+	}
+	return &CodongList{Elements: results}
+}
+
+func cDbCreateIndex(table string, colsVal Value) Value {
+	if cDB == nil { return cError("E2002", "no database connection") }
+	cols := toString(colsVal)
+	name := "idx_" + table + "_" + strings.ReplaceAll(cols, ",", "_")
+	q := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (%s)", name, table, cols)
+	_, err := cDbExec(q)
+	if err != nil { return cError("E2003", err.Error()) }
+	return true
 }
 
 func cDbFind(table string, filterVal Value) *CodongList {
@@ -1003,7 +1114,37 @@ func cDbFind(table string, filterVal Value) *CodongList {
 	where, args := filterSQL(filter)
 	q := "SELECT * FROM " + table
 	if where != "" { q += " WHERE " + where }
-	rows, err := cDB.Query(q, args...)
+	rows, err := cDbQueryRows(q, args...)
+	if err != nil { cPrint(cError("E2003", err.Error())); return &CodongList{} }
+	defer rows.Close()
+	return rowsToList(rows)
+}
+
+func cDbFindOpts(table string, filterVal Value, optsVal Value) Value {
+	if cDB == nil { cPrint(cError("E2002", "no database connection")); return &CodongList{} }
+	var filter *CodongMap
+	if filterVal != nil { filter, _ = filterVal.(*CodongMap) }
+	where, args := filterSQL(filter)
+	q := "SELECT * FROM " + table
+	if where != "" { q += " WHERE " + where }
+	if opts, ok := optsVal.(*CodongMap); ok {
+		if sortVal, ok := opts.Entries["sort"].(*CodongMap); ok {
+			var sortClauses []string
+			for _, k := range sortVal.Order {
+				dir := "ASC"
+				if toFloat(sortVal.Entries[k]) < 0 { dir = "DESC" }
+				sortClauses = append(sortClauses, k+" "+dir)
+			}
+			if len(sortClauses) > 0 { q += " ORDER BY " + strings.Join(sortClauses, ", ") }
+		}
+		if lim, ok := opts.Entries["limit"]; ok {
+			q += fmt.Sprintf(" LIMIT %d", int(toFloat(lim)))
+		}
+		if off, ok := opts.Entries["offset"]; ok {
+			q += fmt.Sprintf(" OFFSET %d", int(toFloat(off)))
+		}
+	}
+	rows, err := cDbQueryRows(q, args...)
 	if err != nil { cPrint(cError("E2003", err.Error())); return &CodongList{} }
 	defer rows.Close()
 	return rowsToList(rows)
@@ -1016,7 +1157,7 @@ func cDbFindOne(table string, filterVal Value) Value {
 	q := "SELECT * FROM " + table
 	if where != "" { q += " WHERE " + where }
 	q += " LIMIT 1"
-	rows, err := cDB.Query(q, args...)
+	rows, err := cDbQueryRows(q, args...)
 	if err != nil { return nil }
 	defer rows.Close()
 	list := rowsToList(rows)
@@ -1036,10 +1177,10 @@ func cDbUpdate(table string, filterVal Value, dataVal Value) Value {
 	allArgs := append(setVals, wArgs...)
 	q := fmt.Sprintf("UPDATE %s SET %s", table, strings.Join(setClauses, ","))
 	if where != "" { q += " WHERE " + where }
-	r, err := cDB.Exec(q, allArgs...)
+	r, err := cDbExec(q, allArgs...)
 	if err != nil { return cError("E2003", err.Error()) }
 	aff, _ := r.RowsAffected()
-	return cMap("affected", float64(aff))
+	return float64(aff)
 }
 
 func cDbDelete(table string, filterVal Value) Value {
@@ -1048,10 +1189,164 @@ func cDbDelete(table string, filterVal Value) Value {
 	where, args := filterSQL(filter)
 	q := "DELETE FROM " + table
 	if where != "" { q += " WHERE " + where }
-	r, err := cDB.Exec(q, args...)
+	r, err := cDbExec(q, args...)
 	if err != nil { return cError("E2003", err.Error()) }
 	aff, _ := r.RowsAffected()
-	return cMap("affected", float64(aff))
+	return float64(aff)
+}
+
+func cDbCreateTable(table string, schema Value) Value {
+	if cDB == nil { return cError("E2002", "no database connection") }
+	m, ok := schema.(*CodongMap)
+	if !ok { return cError("E2003", "schema must be a map") }
+	var cols []string
+	for _, k := range m.Order {
+		colType := toString(m.Entries[k])
+		sqlType := "TEXT"
+		switch strings.ToLower(colType) {
+		case "number", "int", "integer": sqlType = "INTEGER"
+		case "float", "real": sqlType = "REAL"
+		case "bool", "boolean": sqlType = "INTEGER"
+		case "text", "string": sqlType = "TEXT"
+		}
+		if strings.ToLower(k) == "id" {
+			cols = append(cols, k+" INTEGER PRIMARY KEY AUTOINCREMENT")
+		} else {
+			cols = append(cols, k+" "+sqlType)
+		}
+	}
+	q := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s)", table, strings.Join(cols, ", "))
+	_, err := cDbExec(q)
+	if err != nil { return cError("E2003", err.Error()) }
+	return true
+}
+
+func cDbUpsert(table string, filterVal Value, dataVal Value) Value {
+	if cDB == nil { return cError("E2002", "no database connection") }
+	// Try update first
+	filter := filterVal.(*CodongMap)
+	data := dataVal.(*CodongMap)
+	where, wArgs := filterSQL(filter)
+	if where != "" {
+		var count int64
+		cDbQueryRowOne("SELECT COUNT(*) FROM "+table+" WHERE "+where, wArgs...).Scan(&count)
+		if count > 0 {
+			return cDbUpdate(table, filterVal, dataVal)
+		}
+	}
+	// Merge filter and data for insert
+	merged := cMap()
+	for _, k := range filter.Order { cSet(merged, k, filter.Entries[k]) }
+	for _, k := range data.Order { cSet(merged, k, data.Entries[k]) }
+	return cDbInsert(table, merged)
+}
+
+func cDbQueryOne(sqlStr string, params ...Value) Value {
+	if cDB == nil { return cError("E2002", "no database connection") }
+	args := make([]interface{}, len(params))
+	for i, p := range params { args[i] = valueToGo(p) }
+	rows, err := cDbQueryRows(sqlStr+" LIMIT 1", args...)
+	if err != nil { return cError("E2003", err.Error()) }
+	defer rows.Close()
+	list := rowsToList(rows)
+	if len(list.Elements) == 0 { return nil }
+	return list.Elements[0]
+}
+
+var cDbTx *sql.Tx // active transaction, if any
+
+func cDbTransaction(fn Value) Value {
+	if cDB == nil { return cError("E2002", "no database connection") }
+	tx, err := cDB.Begin()
+	if err != nil { return cError("E2003", err.Error()) }
+	cDbTx = tx
+	// Create a tx object with methods that work within the transaction
+	txObj := cMap("_type", "db_tx")
+	cSet(txObj, "update", func(args ...Value) Value {
+		return cDbUpdate(toString(args[0]), args[1], args[2])
+	})
+	cSet(txObj, "insert", func(args ...Value) Value {
+		return cDbInsert(toString(args[0]), args[1])
+	})
+	cSet(txObj, "delete", func(args ...Value) Value {
+		return cDbDelete(toString(args[0]), args[1])
+	})
+	cSet(txObj, "query", func(args ...Value) Value {
+		if len(args) > 1 {
+			return cDbQuery(toString(args[0]), toList(args[1]).Elements...)
+		}
+		return cDbQuery(toString(args[0]))
+	})
+	// Call fn with tx object, and also catch panics from ? operator
+	var result Value
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if rs, ok := r.(*cReturnSignal); ok {
+					if ce, ok := rs.Value.(*CodongError); ok {
+						result = ce
+						return
+					}
+				}
+				if ce, ok := r.(*CodongError); ok {
+					result = ce
+					return
+				}
+				panic(r) // re-panic non-error panics
+			}
+		}()
+		result = cCallFn(fn, txObj)
+	}()
+	cDbTx = nil
+	if e, ok := result.(*CodongError); ok {
+		tx.Rollback()
+		// Re-panic so try/catch can handle it
+		panic(&cReturnSignal{Value: e})
+	}
+	if err := tx.Commit(); err != nil {
+		return cError("E2003", "commit failed: " + err.Error())
+	}
+	return result
+}
+
+// cDbExec executes SQL using the transaction if active, otherwise the main connection.
+func cDbExec(q string, args ...interface{}) (sql.Result, error) {
+	if cDbTx != nil { return cDbTx.Exec(q, args...) }
+	return cDB.Exec(q, args...)
+}
+
+func cDbQueryRows(q string, args ...interface{}) (*sql.Rows, error) {
+	if cDbTx != nil { return cDbTx.Query(q, args...) }
+	return cDB.Query(q, args...)
+}
+
+func cDbQueryRowOne(q string, args ...interface{}) *sql.Row {
+	if cDbTx != nil { return cDbTx.QueryRow(q, args...) }
+	return cDB.QueryRow(q, args...)
+}
+
+func cDbSort(table string, filterVal Value, order string) Value {
+	if cDB == nil { return cError("E2002", "no database connection") }
+	var filter *CodongMap
+	if filterVal != nil { filter, _ = filterVal.(*CodongMap) }
+	// filterVal might be the sort field name as string
+	sortField := ""
+	if s, ok := filterVal.(string); ok {
+		sortField = s
+		filter = nil
+	}
+	where, args := filterSQL(filter)
+	q := "SELECT * FROM " + table
+	if where != "" { q += " WHERE " + where }
+	if sortField != "" {
+		dir := "ASC"
+		if strings.ToLower(order) == "desc" { dir = "DESC" }
+		q += " ORDER BY " + sortField + " " + dir
+	}
+	rows, err := cDbQueryRows(q, args...)
+	if err != nil { return cError("E2003", err.Error()) }
+	defer rows.Close()
+	return rowsToList(rows)
 }
 
 func filterSQL(filter *CodongMap) (string, []interface{}) {
@@ -1059,6 +1354,57 @@ func filterSQL(filter *CodongMap) (string, []interface{}) {
 	var clauses []string; var args []interface{}
 	for _, k := range filter.Order {
 		v := filter.Entries[k]
+		// Handle $and operator
+		if k == "$and" {
+			if andList, ok := v.(*CodongList); ok {
+				for _, item := range andList.Elements {
+					if m, ok := item.(*CodongMap); ok {
+						subWhere, subArgs := filterSQL(m)
+						if subWhere != "" {
+							clauses = append(clauses, "("+subWhere+")")
+							args = append(args, subArgs...)
+						}
+					}
+				}
+			}
+			continue
+		}
+		// Handle operator maps like {$gt: 5, $lt: 10}
+		if opMap, ok := v.(*CodongMap); ok {
+			for _, op := range opMap.Order {
+				val := opMap.Entries[op]
+				switch op {
+				case "$gt":
+					clauses = append(clauses, k+" > ?")
+					args = append(args, valueToGo(val))
+				case "$gte":
+					clauses = append(clauses, k+" >= ?")
+					args = append(args, valueToGo(val))
+				case "$lt":
+					clauses = append(clauses, k+" < ?")
+					args = append(args, valueToGo(val))
+				case "$lte":
+					clauses = append(clauses, k+" <= ?")
+					args = append(args, valueToGo(val))
+				case "$ne":
+					clauses = append(clauses, k+" != ?")
+					args = append(args, valueToGo(val))
+				case "$like":
+					clauses = append(clauses, k+" LIKE ?")
+					args = append(args, valueToGo(val))
+				case "$in":
+					if list, ok := val.(*CodongList); ok {
+						phs := make([]string, len(list.Elements))
+						for i, el := range list.Elements {
+							phs[i] = "?"
+							args = append(args, valueToGo(el))
+						}
+						clauses = append(clauses, k+" IN ("+strings.Join(phs, ",")+")")
+					}
+				}
+			}
+			continue
+		}
 		clauses = append(clauses, k+" = ?")
 		args = append(args, valueToGo(v))
 	}
@@ -1099,10 +1445,14 @@ func cHttpDo(method, url string, body Value, opts ...Value) *CodongMap {
 			bodyReader = bytes.NewReader(jb)
 		}
 	}
-	req, _ := http.NewRequest(method, url, bodyReader)
+	req, reqErr := http.NewRequest(method, url, bodyReader)
+	if reqErr != nil {
+		e := cError("E3005_CONN_FAILED", "connection failed: " + reqErr.Error())
+		return cMap("status", float64(0), "ok", false, "body", e.Error(), "error", e)
+	}
 	req.Header.Set("User-Agent", "Codong/0.1")
 	if body != nil { req.Header.Set("Content-Type", "application/json") }
-	// Apply custom headers from opts
+	// Apply custom headers and params from opts
 	for _, opt := range opts {
 		if m, ok := opt.(*CodongMap); ok {
 			if h, ok := m.Entries["headers"].(*CodongMap); ok {
@@ -1110,10 +1460,36 @@ func cHttpDo(method, url string, body Value, opts ...Value) *CodongMap {
 					req.Header.Set(k, toString(v))
 				}
 			}
+			if p, ok := m.Entries["params"].(*CodongMap); ok {
+				q := req.URL.Query()
+				for _, k := range p.Order {
+					q.Set(k, toString(p.Entries[k]))
+				}
+				req.URL.RawQuery = q.Encode()
+			}
 		}
 	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil { return cMap("status", float64(0), "ok", false, "body", err.Error()) }
+	// Apply timeout
+	timeout := 30 * time.Second
+	for _, opt := range opts {
+		if m, ok := opt.(*CodongMap); ok {
+			if t, ok := m.Entries["timeout"]; ok {
+				ds := toString(t)
+				if d, err := time.ParseDuration(ds); err == nil { timeout = d }
+			}
+		}
+	}
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "timeout") || strings.Contains(errStr, "deadline exceeded") || strings.Contains(errStr, "context deadline") {
+			e := cError("E3001_TIMEOUT", "request timed out: " + errStr, "retry", true)
+			return cMap("status", float64(0), "ok", false, "body", errStr, "error", e)
+		}
+		e := cError("E3005_CONN_FAILED", "connection failed: " + errStr)
+		return cMap("status", float64(0), "ok", false, "body", errStr, "error", e)
+	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
 	rawBody := string(respBody)
@@ -1122,6 +1498,13 @@ func cHttpDo(method, url string, body Value, opts ...Value) *CodongMap {
 	for k, v := range resp.Header {
 		cSet(hm, strings.ToLower(k), v[0])
 	}
+	// Check for HTTP error status codes
+	var httpErr *CodongError
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		httpErr = cError("E3003_HTTP_4XX", fmt.Sprintf("HTTP %d: %s", resp.StatusCode, http.StatusText(resp.StatusCode)))
+	} else if resp.StatusCode >= 500 {
+		httpErr = cError("E3004_HTTP_5XX", fmt.Sprintf("HTTP %d: %s", resp.StatusCode, http.StatusText(resp.StatusCode)))
+	}
 	// Build response with callable json() and text()
 	m := cMap(
 		"status", float64(resp.StatusCode),
@@ -1129,6 +1512,9 @@ func cHttpDo(method, url string, body Value, opts ...Value) *CodongMap {
 		"body", rawBody,
 		"headers", hm,
 	)
+	if httpErr != nil {
+		cSet(m, "error", httpErr)
+	}
 	cSet(m, "json", func(args ...Value) Value {
 		var data interface{}
 		if json.Unmarshal([]byte(rawBody), &data) != nil { return nil }
@@ -1138,6 +1524,25 @@ func cHttpDo(method, url string, body Value, opts ...Value) *CodongMap {
 		return rawBody
 	})
 	return m
+}
+
+func cHttpRequest(optsVal Value) *CodongMap {
+	m, ok := optsVal.(*CodongMap)
+	if !ok { return cMap("status", float64(0), "ok", false, "body", "invalid options") }
+	method := "GET"
+	url := ""
+	var body Value
+	if v, ok := m.Entries["method"].(string); ok { method = strings.ToUpper(v) }
+	if v, ok := m.Entries["url"].(string); ok { url = v }
+	if v, ok := m.Entries["body"]; ok { body = v }
+	opts := []Value{}
+	// Pass headers/params/timeout as opts map
+	optsMap := cMap()
+	if h, ok := m.Entries["headers"]; ok { cSet(optsMap, "headers", h) }
+	if p, ok := m.Entries["params"]; ok { cSet(optsMap, "params", p) }
+	if t, ok := m.Entries["timeout"]; ok { cSet(optsMap, "timeout", t) }
+	if len(optsMap.Entries) > 0 { opts = append(opts, optsMap) }
+	return cHttpDo(method, url, body, opts...)
 }
 
 // --- HTTP Response Methods (in cCall for CodongMap) ---
@@ -1193,6 +1598,9 @@ func cErrorToJson(err Value) Value {
 		"code": e.Code, "message": e.Message, "fix": e.Fix,
 		"retry": e.Retry, "docs": e.Docs, "source": e.Source,
 	}
+	if e.Context != nil {
+		data["context"] = valueToGo(e.Context)
+	}
 	jb, _ := json.Marshal(data)
 	return string(jb)
 }
@@ -1201,6 +1609,45 @@ func cErrorToCompact(err Value) Value {
 	e, ok := err.(*CodongError)
 	if !ok { return nil }
 	return fmt.Sprintf("err_code:%s|src:%s|msg:%s|fix:%s|retry:%v", e.Code, e.Source, e.Message, e.Fix, e.Retry)
+}
+
+func cErrorFromJson(jsonStr Value) Value {
+	s := toString(jsonStr)
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(s), &data); err != nil {
+		return cError("E1001", "invalid JSON: " + err.Error())
+	}
+	code := ""; if c, ok := data["code"].(string); ok { code = c }
+	msg := ""; if m, ok := data["message"].(string); ok { msg = m }
+	e := cError(code, msg)
+	if f, ok := data["fix"].(string); ok { e.Fix = f }
+	if r, ok := data["retry"].(bool); ok { e.Retry = r }
+	if d, ok := data["docs"].(string); ok { e.Docs = d }
+	if src, ok := data["source"].(string); ok { e.Source = src }
+	return e
+}
+
+func cErrorFromCompact(compactStr Value) Value {
+	s := toString(compactStr)
+	e := &CodongError{Source: "codong", IsError: true}
+	parts := strings.Split(s, "|")
+	for _, part := range parts {
+		kv := strings.SplitN(part, ":", 2)
+		if len(kv) != 2 { continue }
+		key := strings.TrimSpace(kv[0])
+		val := strings.TrimSpace(kv[1])
+		switch key {
+		case "err_code": e.Code = val
+		case "src": e.Source = val
+		case "msg": e.Message = val
+		case "fix": e.Fix = val
+		case "retry": e.Retry = val == "true"
+		}
+	}
+	if e.Docs == "" && e.Code != "" {
+		e.Docs = "https://codong.org/errors/" + e.Code
+	}
+	return e
 }
 
 func cErrorSetFormat(f Value) Value {
@@ -1222,14 +1669,26 @@ func cErrorHandle(err Value, handlers Value) Value {
 	return err
 }
 
-func cErrorRetry(fn Value, maxAttempts Value) Value {
-	max := int(toFloat(maxAttempts))
+func cErrorRetry(fn Value, opts Value) Value {
+	max := 3
+	var delayDur time.Duration
+	if m, ok := opts.(*CodongMap); ok {
+		if v, ok := m.Entries["max"]; ok { max = int(toFloat(v)) }
+		if v, ok := m.Entries["delay"]; ok {
+			ds := toString(v)
+			if d, err := time.ParseDuration(ds); err == nil { delayDur = d }
+		}
+	} else {
+		max = int(toFloat(opts))
+	}
 	var lastErr Value
 	for i := 0; i < max; i++ {
 		result := cCallFn(fn)
 		if e, ok := result.(*CodongError); ok {
-			if e.Retry { lastErr = result; continue }
-			return result
+			lastErr = result
+			_ = e
+			if delayDur > 0 && i < max-1 { time.Sleep(delayDur) }
+			continue
 		}
 		return result
 	}
@@ -1311,14 +1770,27 @@ func cLlmCountTokens(text string) Value {
 
 // --- Dynamic Function Call Helper ---
 
+var cCallDepth int
+
 func cCallFn(fn Value, args ...Value) Value {
 	if f, ok := fn.(func(...Value) Value); ok {
-		return f(args...)
+		cCallDepth++
+		if cCallDepth > 10000 {
+			cCallDepth = 0
+			panic(cError("E9002_STACK_OVERFLOW", "maximum call stack exceeded"))
+		}
+		result := f(args...)
+		cCallDepth--
+		return result
 	}
 	// Try to call as a CodongMap with callable entries (for req.param("id") pattern)
 	if m, ok := fn.(*CodongMap); ok && len(args) > 0 {
 		key := toString(args[0])
 		if v, exists := m.Entries[key]; exists { return v }
+	}
+	// Non-function call — panic with E1004
+	if fn != nil {
+		panic(cError("E1004_UNDEFINED_FUNC", fmt.Sprintf("attempted to call a non-function value of type %s", typeOf(fn))))
 	}
 	return nil
 }
