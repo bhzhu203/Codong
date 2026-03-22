@@ -204,6 +204,10 @@ func (i *Interpreter) Eval(node parser.Node, env *Environment) Object {
 			if isError(val) {
 				return val
 			}
+			// If ? already wrapped in ReturnValue, don't double-wrap
+			if rv, ok := val.(*ReturnValue); ok {
+				return rv
+			}
 			return &ReturnValue{Value: val}
 		}
 		return &ReturnValue{Value: NULL_OBJ}
@@ -283,6 +287,19 @@ func (i *Interpreter) Eval(node parser.Node, env *Environment) Object {
 		left := i.Eval(node.Left, env)
 		if isError(left) {
 			return left
+		}
+		// Short-circuit && and ||
+		if node.Operator == "&&" {
+			if !isTruthy(left) {
+				return left
+			}
+			return i.Eval(node.Right, env)
+		}
+		if node.Operator == "||" {
+			if isTruthy(left) {
+				return left
+			}
+			return i.Eval(node.Right, env)
 		}
 		right := i.Eval(node.Right, env)
 		if isError(right) {
@@ -1507,10 +1524,27 @@ var builtins = map[string]*BuiltinFunction{
 	"to_bool": {
 		Name: "to_bool",
 		Fn: func(interp *Interpreter, args ...Object) Object {
-			if len(args) > 0 {
+			if len(args) == 0 {
+				return FALSE_OBJ
+			}
+			switch v := args[0].(type) {
+			case *StringObject:
+				switch v.Value {
+				case "true", "1", "yes":
+					return TRUE_OBJ
+				default:
+					return FALSE_OBJ
+				}
+			case *NumberObject:
+				if v.Value != 0 {
+					return TRUE_OBJ
+				}
+				return FALSE_OBJ
+			case *BoolObject:
+				return v
+			default:
 				return nativeBoolToObject(isTruthy(args[0]))
 			}
-			return FALSE_OBJ
 		},
 	},
 	"range": {
@@ -1553,6 +1587,30 @@ var builtins = map[string]*BuiltinFunction{
 			return newRuntimeError(codongerror.E1004_UNDEFINED_FUNC,
 				"console.log() is not a Codong function",
 				"use print() instead: print(\"your message\")")
+		},
+	},
+	"len": {
+		Name: "len",
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			return newRuntimeError(codongerror.E1004_UNDEFINED_FUNC,
+				"len() is not a global function in Codong",
+				"use .len() method instead: items.len(), str.len()")
+		},
+	},
+	"var": {
+		Name: "var",
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			return newRuntimeError(codongerror.E1001_SYNTAX_ERROR,
+				"'var' is not a Codong keyword",
+				"assign directly: x = value, or use 'const x = value' for constants")
+		},
+	},
+	"let": {
+		Name: "let",
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			return newRuntimeError(codongerror.E1001_SYNTAX_ERROR,
+				"'let' is not a Codong keyword",
+				"assign directly: x = value, or use 'const x = value' for constants")
 		},
 	},
 }

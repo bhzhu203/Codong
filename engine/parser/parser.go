@@ -224,6 +224,14 @@ func (p *Parser) parseStatement() Statement {
 }
 
 func (p *Parser) parseAssignOrExpressionStatement() Statement {
+	// Catch common non-Codong keywords
+	if p.curToken.Type == lexer.IDENT {
+		switch p.curToken.Literal {
+		case "var", "let":
+			p.errors = append(p.errors, fmt.Sprintf("line %d: '%s' is not a Codong keyword. Assign directly: x = value, or use 'const x = value'", p.curToken.Line, p.curToken.Literal))
+			return nil
+		}
+	}
 	// Parse the left-hand side as an expression first
 	leftExpr := p.parseExpression(LOWEST)
 
@@ -286,8 +294,10 @@ func (p *Parser) parseIfStatement() *IfStatement {
 		return nil
 	}
 	stmt.Consequence = p.parseBlockStatement()
-	// check for else
-	p.skipNewlines()
+	// check for else — skip newlines between } and else
+	for p.peekToken.Type == lexer.NEWLINE {
+		p.nextToken()
+	}
 	if p.peekToken.Type == lexer.ELSE {
 		p.nextToken() // move to else
 		p.nextToken() // skip else
@@ -350,9 +360,12 @@ func (p *Parser) parseMatchStatement() *MatchStatement {
 		if p.curToken.Type == lexer.LBRACE {
 			mc.BodyBlock = p.parseBlockStatement()
 		} else if p.curToken.Type == lexer.RETURN {
-			// return statement in match arm → wrap in block
 			retStmt := p.parseReturnStatement()
 			mc.BodyBlock = &BlockStatement{Statements: []Statement{retStmt}}
+		} else if p.curToken.Type == lexer.IDENT && p.peekToken.Type == lexer.ASSIGN {
+			// Assignment statement in match arm: g = "A"
+			assignStmt := p.parseAssignOrExpressionStatement()
+			mc.BodyBlock = &BlockStatement{Statements: []Statement{assignStmt}}
 		} else {
 			mc.Body = p.parseExpression(LOWEST)
 		}

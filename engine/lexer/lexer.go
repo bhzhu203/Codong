@@ -72,6 +72,10 @@ func (l *Lexer) NextToken() Token {
 		l.line++
 		l.column = 0
 		l.readChar()
+	case ';':
+		tok.Type = NEWLINE
+		tok.Literal = ";"
+		l.readChar()
 		return tok
 
 	// Operators and delimiters
