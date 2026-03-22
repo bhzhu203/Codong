@@ -588,8 +588,8 @@ func (i *Interpreter) evalForIn(node *parser.ForInStatement, env *Environment) O
 		)}
 	}
 	for _, elem := range list.Elements {
+		env.Set(node.Variable.Value, elem)
 		innerEnv := NewEnclosedEnvironment(env)
-		innerEnv.Set(node.Variable.Value, elem)
 		result := i.Eval(node.Body, innerEnv)
 		if _, ok := result.(*BreakSignal); ok {
 			break
@@ -768,8 +768,8 @@ func (i *Interpreter) applyFunction(fn Object, args []Object, named ...map[strin
 				extEnv.Set(param, val)
 			} else if fn.DefaultExprs != nil {
 				if defExpr, ok := fn.DefaultExprs[param]; ok {
-					// Evaluate default at call time (avoids mutable default trap)
-					extEnv.Set(param, i.Eval(defExpr, fn.Env))
+					// Evaluate default at call time in extEnv (so earlier params are visible)
+					extEnv.Set(param, i.Eval(defExpr, extEnv))
 				}
 			}
 		}
@@ -812,13 +812,13 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 
 	// Map access and methods
 	if m, ok := obj.(*MapObject); ok {
-		// Check if it's a method call first
-		if mapMethod := i.evalMapMethod(m, prop); mapMethod != nil {
-			return mapMethod
-		}
-		// Otherwise it's field access
+		// Field access first — user-defined fields take priority over built-in methods
 		if val, exists := m.Entries[prop]; exists {
 			return val
+		}
+		// Then check built-in map methods
+		if mapMethod := i.evalMapMethod(m, prop); mapMethod != nil {
+			return mapMethod
 		}
 		return NULL_OBJ // accessing non-existent key returns null
 	}
@@ -1535,11 +1535,6 @@ var builtins = map[string]*BuiltinFunction{
 				default:
 					return FALSE_OBJ
 				}
-			case *NumberObject:
-				if v.Value != 0 {
-					return TRUE_OBJ
-				}
-				return FALSE_OBJ
 			case *BoolObject:
 				return v
 			default:
@@ -1666,6 +1661,9 @@ func newRuntimeError(code, message, fix string) *ErrorObject {
 }
 
 func objectsEqual(a, b Object) bool {
+	if a == b {
+		return true // same pointer (reference equality for list/map)
+	}
 	if a.Type() != b.Type() {
 		return false
 	}
