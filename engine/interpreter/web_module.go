@@ -36,9 +36,10 @@ func (w *WebModuleObject) Inspect() string { return "<module:web>" }
 
 var webModuleSingleton = &WebModuleObject{}
 
-// ServerObject wraps a running HTTP server.
+// ServerObject wraps an HTTP server (starts on WaitForServers).
 type ServerObject struct {
 	server *http.Server
+	port   int
 	done   chan error
 }
 
@@ -115,23 +116,17 @@ func (i *Interpreter) webRegisterRoute(method string, args []Object) Object {
 		pattern: routePath,
 		handler: handler,
 	})
-	// If mux already exists (server running), add route dynamically
-	if webModuleSingleton.mux != nil {
-		pattern := fmt.Sprintf("%s %s", method, routePath)
-		webModuleSingleton.mux.HandleFunc(pattern, i.codongHandlerToHTTP(handler, routePath))
-	}
 	return NULL_OBJ
 }
 
-// webServe starts the HTTP server.
+// webServe creates a server object. The server starts listening in WaitForServers()
+// so routes can be registered after web.serve() returns.
 func (i *Interpreter) webServe(args []Object) Object {
 	port := 8080
-	// Check positional arg
 	if len(args) > 0 {
 		if n, ok := args[0].(*NumberObject); ok {
 			port = int(n.Value)
 		}
-		// Check named args (trailing MapObject)
 		if m, ok := args[len(args)-1].(*MapObject); ok {
 			if p, exists := m.Entries["port"]; exists {
 				if n, ok := p.(*NumberObject); ok {
@@ -141,40 +136,14 @@ func (i *Interpreter) webServe(args []Object) Object {
 		}
 	}
 
-	mux := http.NewServeMux()
-	webModuleSingleton.mu.Lock()
-	webModuleSingleton.mux = mux
-	webModuleSingleton.interp = i
-	routes := make([]webRoute, len(webModuleSingleton.routes))
-	copy(routes, webModuleSingleton.routes)
-	webModuleSingleton.mu.Unlock()
-
-	for _, r := range routes {
-		pattern := fmt.Sprintf("%s %s", r.method, r.pattern)
-		handler := r.handler
-		routePattern := r.pattern
-		mux.HandleFunc(pattern, i.codongHandlerToHTTP(handler, routePattern))
-	}
-
-	addr := fmt.Sprintf(":%d", port)
-	server := &http.Server{
-		Addr:    addr,
-		Handler: mux,
-	}
-
 	srvObj := &ServerObject{
-		server: server,
-		done:   make(chan error, 1),
+		port: port,
+		done: make(chan error, 1),
 	}
 
-	// Start server in goroutine
-	go func() {
-		fmt.Fprintf(os.Stderr, "Codong server listening on http://localhost%s\n", addr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			srvObj.done <- err
-		}
-		close(srvObj.done)
-	}()
+	webModuleSingleton.mu.Lock()
+	webModuleSingleton.interp = i
+	webModuleSingleton.mu.Unlock()
 
 	i.mu.Lock()
 	i.servers = append(i.servers, srvObj)
@@ -477,7 +446,7 @@ func (i *Interpreter) webCustomResponse(args []Object) Object {
 	}
 }
 
-// WaitForServers blocks until all web servers are shut down or SIGINT is received.
+// WaitForServers builds muxes, registers all routes, starts listening, then blocks.
 func (i *Interpreter) WaitForServers() {
 	i.mu.Lock()
 	servers := make([]*ServerObject, len(i.servers))
@@ -486,6 +455,33 @@ func (i *Interpreter) WaitForServers() {
 
 	if len(servers) == 0 {
 		return
+	}
+
+	// Build mux with all registered routes
+	webModuleSingleton.mu.Lock()
+	routes := make([]webRoute, len(webModuleSingleton.routes))
+	copy(routes, webModuleSingleton.routes)
+	webModuleSingleton.mu.Unlock()
+
+	for _, srv := range servers {
+		mux := http.NewServeMux()
+		for _, r := range routes {
+			pattern := fmt.Sprintf("%s %s", r.method, r.pattern)
+			handler := r.handler
+			routePattern := r.pattern
+			mux.HandleFunc(pattern, i.codongHandlerToHTTP(handler, routePattern))
+		}
+
+		addr := fmt.Sprintf(":%d", srv.port)
+		srv.server = &http.Server{Addr: addr, Handler: mux}
+
+		go func(s *ServerObject, a string) {
+			fmt.Fprintf(os.Stderr, "Codong server listening on http://localhost%s\n", a)
+			if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				s.done <- err
+			}
+			close(s.done)
+		}(srv, addr)
 	}
 
 	// Wait for SIGINT/SIGTERM
@@ -498,7 +494,9 @@ func (i *Interpreter) WaitForServers() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		for _, srv := range servers {
-			srv.server.Shutdown(ctx)
+			if srv.server != nil {
+				srv.server.Shutdown(ctx)
+			}
 		}
 	case err := <-servers[0].done:
 		if err != nil {
