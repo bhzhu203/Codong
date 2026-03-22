@@ -676,6 +676,11 @@ func cPrintV(v Value) Value {
 	return nil
 }
 
+func cPrintError(code, msg string) {
+	e := cError(code, msg)
+	cPanicExit(e)
+}
+
 func cPrintMultiErr(count int) Value {
 	e := cError("E1005_ARG_ERROR", fmt.Sprintf("print() takes exactly 1 argument (%d given)", count), "fix", "use string interpolation: print(\"${a} ${b}\")")
 	cPanicExit(e)

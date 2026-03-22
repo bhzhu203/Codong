@@ -12,11 +12,12 @@ type Generator struct {
 	indent   int
 	output   strings.Builder
 	declared map[string]bool // tracks declared variables
+	consts   map[string]bool // tracks const bindings
 }
 
 // Generate produces a complete Go program from a Codong AST.
 func Generate(program *parser.Program) string {
-	g := &Generator{declared: map[string]bool{}}
+	g := &Generator{declared: map[string]bool{}, consts: map[string]bool{}}
 	g.output.WriteString(RuntimeSource)
 	g.output.WriteString("\n\nfunc main() {\n")
 	g.indent = 1
@@ -85,6 +86,9 @@ func (g *Generator) genStatement(stmt parser.Statement) {
 		goName := escapeGoName(name)
 		if name == "_" {
 			g.writef("_ = %s", g.genExpr(s.Value))
+		} else if g.consts[name] {
+			// const reassignment → runtime error
+			g.writef("cPrintError(\"E1001_SYNTAX_ERROR\", \"cannot assign to const '%s'\")", name)
 		} else if g.declared[name] {
 			g.writef("%s = %s", goName, g.genExpr(s.Value))
 		} else {
@@ -93,8 +97,9 @@ func (g *Generator) genStatement(stmt parser.Statement) {
 		}
 	case *parser.ConstStatement:
 		g.declared[s.Name.Value] = true
+		g.consts[s.Name.Value] = true
 		goName := escapeGoName(s.Name.Value)
-		g.writef("var %s Value = %s", goName, g.genExpr(s.Value))
+		g.writef("var %s Value = %s; _ = %s", goName, g.genExpr(s.Value), goName)
 	case *parser.CompoundAssignStatement:
 		val := g.genExpr(s.Value)
 		opFn := map[string]string{"+=": "cAdd", "-=": "cSub", "*=": "cMul", "/=": "cDiv"}[s.Operator]

@@ -261,7 +261,11 @@ func translateGoError(stderr string) string {
 		case strings.Contains(msg, "undefined:"):
 			varName := strings.TrimSpace(strings.TrimPrefix(msg, "undefined:"))
 			// Check for common user mistakes
-			if varName == "console" {
+			if varName == "_len" || varName == "len" {
+				ce.Code = "E1004_UNDEFINED_FUNC"
+				ce.Message = "len() is not a Codong function. Use .len() method instead"
+				ce.Fix = "use items.len() instead of len(items)"
+			} else if varName == "console" {
 				ce.Code = "E1004_UNDEFINED_FUNC"
 				ce.Message = "console.log() is not a Codong function"
 				ce.Fix = "use print() instead: print(\"your message\")"
