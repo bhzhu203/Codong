@@ -50,6 +50,8 @@ func Generate(program *parser.Program) string {
 	for _, stmt := range program.Statements {
 		g.genStatement(stmt)
 	}
+	// Start web servers after all routes are registered
+	g.write("cWebServeAll()")
 	g.output.WriteString("}\n")
 	return g.output.String()
 }
@@ -481,16 +483,29 @@ func (g *Generator) genMethodCall(member *parser.MemberAccessExpression, argumen
 		}
 	}
 
+	// Server object method call: server.get(path, handler) → route registration
+	switch method {
+	case "get", "post", "put", "delete", "patch":
+		goMethod := strings.ToUpper(method)
+		if len(args) >= 2 {
+			return fmt.Sprintf("cWebRoute(\"%s\", %s, %s)", goMethod, args[0], args[1])
+		}
+	case "group":
+		// server.group("/prefix") — just return a placeholder, routes use full paths
+		if len(args) > 0 {
+			return fmt.Sprintf("cMap(\"_type\", \"group\", \"prefix\", %s)", args[0])
+		}
+	}
+
 	// Object method call: obj.method(args)
 	return fmt.Sprintf("cCall(%s, %q, %s)", obj, method, strings.Join(args, ", "))
 }
 
 func (g *Generator) genWebCall(method string, args []string, named map[string]parser.Expression) string {
 	switch method {
-	case "get":
-		return fmt.Sprintf("cWebGet(%s, %s)", args[0], args[1])
-	case "post":
-		return fmt.Sprintf("cWebPost(%s, %s)", args[0], args[1])
+	case "get", "post", "put", "delete", "patch":
+		goMethod := strings.ToUpper(method)
+		return fmt.Sprintf("cWebRoute(\"%s\", %s, %s)", goMethod, args[0], args[1])
 	case "serve":
 		port := "8080"
 		if len(args) > 0 {
@@ -501,13 +516,21 @@ func (g *Generator) genWebCall(method string, args []string, named map[string]pa
 				port = fmt.Sprintf("int(toFloat(%s))", g.genExpr(p))
 			}
 		}
-		return fmt.Sprintf("cWebServe(%s)", port)
+		return fmt.Sprintf("cWebMakeServer(%s)", port)
 	case "json":
 		return fmt.Sprintf("cWebJson(%s)", args[0])
 	case "text":
 		return fmt.Sprintf("cWebText(%s)", args[0])
 	case "html":
 		return fmt.Sprintf("cWebHtml(%s)", args[0])
+	case "redirect":
+		return fmt.Sprintf("cMap(\"_type\", \"redirect\", \"url\", %s, \"status\", float64(302))", args[0])
+	case "response":
+		if len(args) > 1 {
+			return fmt.Sprintf("cMap(\"_type\", \"text\", \"status\", %s, \"body\", %s)", args[0], args[1])
+		}
+	case "use":
+		return fmt.Sprintf("cDiscard(%s)", args[0]) // middleware not implemented in IR yet
 	}
 	return "nil"
 }

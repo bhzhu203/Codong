@@ -560,6 +560,27 @@ func cCall(obj Value, method string, args ...Value) Value {
 	switch o := obj.(type) {
 	case *CodongList: return cListMethod(o, method, args...)
 	case *CodongMap:
+		// Server/group objects — route registration
+		if t, ok := o.Entries["_type"].(string); ok {
+			switch t {
+			case "server":
+				switch method {
+				case "get", "post", "put", "delete", "patch":
+					return cWebRoute(strings.ToUpper(method), args[0], args[1])
+				case "group":
+					if len(args) > 0 { return cMap("_type", "group", "prefix", args[0]) }
+				case "close":
+					return nil
+				}
+			case "group":
+				prefix := toString(o.Entries["prefix"])
+				switch method {
+				case "get", "post", "put", "delete", "patch":
+					fullPath := prefix + toString(args[0])
+					return cWebRoute(strings.ToUpper(method), fullPath, args[1])
+				}
+			}
+		}
 		// User-defined function fields take priority
 		if fn, ok := o.Entries[method]; ok {
 			if f, ok := fn.(func(...Value) Value); ok { return f(args...) }
@@ -606,6 +627,31 @@ func cPropagate(v Value) Value {
 // --- Web Module ---
 
 var cWebRoutes []struct{ method, pattern string; handler func(...Value) Value }
+var cWebServers []*struct{ port int }
+
+func cWebRoute(method string, pattern Value, handler Value) Value {
+	p := toString(pattern)
+	// Convert :param to {param}
+	parts := strings.Split(p, "/")
+	for i, part := range parts {
+		if strings.HasPrefix(part, ":") { parts[i] = "{" + part[1:] + "}" }
+	}
+	p = strings.Join(parts, "/")
+	fn := handler.(func(...Value) Value)
+	cWebRoutes = append(cWebRoutes, struct{ method, pattern string; handler func(...Value) Value }{method, p, fn})
+	return nil
+}
+
+func cWebMakeServer(port int) Value {
+	cWebServers = append(cWebServers, &struct{ port int }{port})
+	return cMap("_type", "server", "port", float64(port))
+}
+
+func cWebServeAll() {
+	if len(cWebServers) == 0 { return }
+	srv := cWebServers[0]
+	cWebServe(srv.port)
+}
 
 func cWebGet(pattern string, handler func(...Value) Value) {
 	cWebRoutes = append(cWebRoutes, struct{ method, pattern string; handler func(...Value) Value }{"GET", pattern, handler})
