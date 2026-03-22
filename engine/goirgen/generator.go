@@ -89,17 +89,22 @@ func (g *Generator) genStatement(stmt parser.Statement) {
 		} else if g.consts[name] {
 			// const reassignment → runtime error
 			g.writef("cPrintError(\"E1001_SYNTAX_ERROR\", \"cannot assign to const '%s'\")", name)
-		} else if g.declared[name] {
+		} else if g.declared[name] || g.consts[name] {
 			g.writef("%s = %s", goName, g.genExpr(s.Value))
 		} else {
 			g.declared[name] = true
 			g.writef("var %s Value = %s; _ = %s", goName, g.genExpr(s.Value), goName)
 		}
 	case *parser.ConstStatement:
-		g.declared[s.Name.Value] = true
-		g.consts[s.Name.Value] = true
 		goName := escapeGoName(s.Name.Value)
-		g.writef("var %s Value = %s; _ = %s", goName, g.genExpr(s.Value), goName)
+		if g.declared[s.Name.Value] {
+			// Already declared (e.g., outer scope const) — just reassign in this scope
+			g.writef("%s = %s", goName, g.genExpr(s.Value))
+		} else {
+			g.declared[s.Name.Value] = true
+			g.writef("var %s Value = %s; _ = %s", goName, g.genExpr(s.Value), goName)
+		}
+		g.consts[s.Name.Value] = true
 	case *parser.CompoundAssignStatement:
 		val := g.genExpr(s.Value)
 		opFn := map[string]string{"+=": "cAdd", "-=": "cSub", "*=": "cMul", "/=": "cDiv"}[s.Operator]
