@@ -798,21 +798,30 @@ func cWebHtml(body Value) *CodongMap {
 // --- DB Module ---
 
 var cDB *sql.DB
+var cDbTempFile string
 
 func cDbConnect(dsn string) Value {
 	// Strip SQLite URL prefix if present
 	cleanDSN := dsn
-	if strings.HasPrefix(dsn, "sqlite:///") { cleanDSN = dsn[len("sqlite:///"):] }
-	if strings.HasPrefix(dsn, "sqlite://") { cleanDSN = dsn[len("sqlite://"):] }
-	isMemory := cleanDSN == ":memory:"
-	if isMemory { cleanDSN = fmt.Sprintf("/tmp/codong_%d.db", os.Getpid()) }
+	if strings.HasPrefix(dsn, "sqlite:///") { cleanDSN = dsn[len("sqlite:///"):]
+	} else if strings.HasPrefix(dsn, "sqlite://") { cleanDSN = dsn[len("sqlite://"):] }
+	// For in-memory databases, create a real temp file
+	// modernc.org/sqlite + database/sql pool doesn't work with :memory:
+	if cleanDSN == ":memory:" {
+		f, err := os.CreateTemp("", "codong-mem-*.db")
+		if err != nil { return cError("E2003", "cannot create temp db: " + err.Error()) }
+		cleanDSN = f.Name()
+		f.Close()
+		// Register cleanup on exit
+		cDbTempFile = cleanDSN
+	}
 	var err error
 	cDB, err = sql.Open("sqlite", cleanDSN)
-	if err != nil { return cError("E2002", "db connect failed: " + err.Error()) }
-	// MUST set before any queries — single connection for in-memory DBs
+	if err != nil { return cError("E2003", "db connect failed: " + err.Error()) }
 	cDB.SetMaxOpenConns(1)
-	if err := cDB.Ping(); err != nil { return cError("E2002", "connection failed: " + err.Error()) }
-	if !isMemory {
+	if err := cDB.Ping(); err != nil { return cError("E2003", "connection failed: " + err.Error()) }
+	// WAL mode for file-based only
+	if cleanDSN != "" && !strings.Contains(cleanDSN, "codong-mem") {
 		cDB.Exec("PRAGMA journal_mode=WAL")
 	}
 	return true
@@ -820,6 +829,7 @@ func cDbConnect(dsn string) Value {
 
 func cDbDisconnectRT() Value {
 	if cDB != nil { cDB.Close(); cDB = nil }
+	if cDbTempFile != "" { os.Remove(cDbTempFile); cDbTempFile = "" }
 	return nil
 }
 
