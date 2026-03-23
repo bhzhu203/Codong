@@ -776,11 +776,11 @@ func cRange(start, end float64) *CodongList {
 type cReturnSignal struct{ Value Value }
 
 func cPropagate(v Value) Value {
-	// The ? operator converts errors into assignable values.
-	// If the value is a CodongError, return it so it can be assigned and inspected.
-	// If the value is nil (from operations that return nil on failure), return it as-is.
-	if _, ok := v.(*CodongError); ok {
-		return v
+	// The ? operator propagates errors up the call stack (like Rust's ?).
+	// If the value is a CodongError, panic with a return signal so the
+	// enclosing function returns the error to its caller.
+	if e, ok := v.(*CodongError); ok {
+		panic(&cReturnSignal{Value: e})
 	}
 	// Check for map responses with an "error" field (e.g., HTTP responses)
 	if m, ok := v.(*CodongMap); ok {
@@ -1280,7 +1280,15 @@ func cWebApplyStatic(m *CodongMap, next http.Handler) http.Handler {
 		info, err := os.Stat(fsPath)
 		if err != nil {
 			if os.IsNotExist(err) {
+				// Try API routes first (next handler), then SPA fallback
 				if spa {
+					// Use a response recorder to check if next handler has a real response
+					rec := &responseRecorder{ResponseWriter: w, statusCode: 0}
+					next.ServeHTTP(rec, r)
+					if rec.statusCode != 0 && rec.statusCode != 404 {
+						return // API route handled it
+					}
+					// API returned 404 or didn't handle — serve SPA index
 					indexPath := filepath.Join(root, indexFile)
 					if ii, e := os.Stat(indexPath); e == nil && !ii.IsDir() {
 						cServeStaticFile(w, r, indexPath, ii, maxAge, useETag)
@@ -1298,6 +1306,23 @@ func cWebApplyStatic(m *CodongMap, next http.Handler) http.Handler {
 		}
 		cServeStaticFile(w, r, fsPath, info, maxAge, useETag)
 	})
+}
+
+// responseRecorder captures the status code to check if a handler handled the request
+type responseRecorder struct {
+	http.ResponseWriter
+	statusCode int
+	written    bool
+}
+func (rr *responseRecorder) WriteHeader(code int) {
+	rr.statusCode = code
+	if code != 404 { rr.ResponseWriter.WriteHeader(code) }
+	rr.written = true
+}
+func (rr *responseRecorder) Write(b []byte) (int, error) {
+	if !rr.written { rr.statusCode = 200; rr.written = true }
+	if rr.statusCode == 404 { return len(b), nil } // swallow 404 body
+	return rr.ResponseWriter.Write(b)
 }
 
 func cServeStaticFile(w http.ResponseWriter, r *http.Request, path string, info os.FileInfo, maxAge int, useETag bool) {

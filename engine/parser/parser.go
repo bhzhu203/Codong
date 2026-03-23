@@ -476,14 +476,24 @@ func (p *Parser) parseSelectStatement() *SelectStatement {
 }
 
 func (p *Parser) parseImportStatement() *ImportStatement {
-	stmt := &ImportStatement{Token: p.curToken}
+	stmt := &ImportStatement{Token: p.curToken, Aliases: map[string]string{}}
 	if !p.expectPeek(lexer.LBRACE) {
 		return nil
 	}
 	p.nextToken() // skip {
 	for p.curToken.Type != lexer.RBRACE && p.curToken.Type != lexer.EOF {
-		stmt.Names = append(stmt.Names, p.curToken.Literal)
+		name := p.curToken.Literal
 		p.nextToken()
+		// Check for "as alias"
+		if p.curToken.Type == lexer.IDENT && p.curToken.Literal == "as" {
+			p.nextToken() // skip "as"
+			alias := p.curToken.Literal
+			stmt.Names = append(stmt.Names, name)
+			stmt.Aliases[name] = alias
+			p.nextToken()
+		} else {
+			stmt.Names = append(stmt.Names, name)
+		}
 		if p.curToken.Type == lexer.COMMA {
 			p.nextToken()
 		}

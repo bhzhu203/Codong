@@ -271,9 +271,10 @@ func (cs *ContinueStatement) TokenLiteral() string { return cs.Token.Literal }
 func (cs *ContinueStatement) String() string       { return "continue" }
 
 type ImportStatement struct {
-	Token lexer.Token
-	Names []string
-	Path  string
+	Token   lexer.Token
+	Names   []string            // original export names
+	Aliases map[string]string   // original -> alias (for "import { x as y }")
+	Path    string
 }
 
 func (is *ImportStatement) statementNode()       {}

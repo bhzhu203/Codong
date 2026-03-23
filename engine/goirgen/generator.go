@@ -276,10 +276,21 @@ func (g *Generator) genImport(s *parser.ImportStatement) {
 	}
 
 	g.sourceDir = oldSourceDir
-	// Ensure all imported names are "used" (prevent Go's "declared and not used" error)
+	// Create aliases for "import { x as y }" and ensure all names are "used"
 	for _, name := range s.Names {
+		goName := escapeGoName(name)
+		if alias, hasAlias := s.Aliases[name]; hasAlias {
+			aliasGo := escapeGoName(alias)
+			if !g.declared[alias] {
+				g.writef("var %s = %s", aliasGo, goName)
+				g.declared[alias] = true
+			} else {
+				g.writef("%s = %s", aliasGo, goName)
+			}
+			g.writef("_ = %s", aliasGo)
+		}
 		if exportedNames[name] {
-			g.writef("_ = %s", name)
+			g.writef("_ = %s", goName)
 		}
 	}
 	g.writef("// --- end import from %s ---", s.Path)
