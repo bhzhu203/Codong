@@ -362,12 +362,11 @@ func (p *Parser) parseMatchStatement() *MatchStatement {
 		} else if p.curToken.Type == lexer.RETURN {
 			retStmt := p.parseReturnStatement()
 			mc.BodyBlock = &BlockStatement{Statements: []Statement{retStmt}}
-		} else if p.curToken.Type == lexer.IDENT && p.peekToken.Type == lexer.ASSIGN {
-			// Assignment statement in match arm: g = "A"
-			assignStmt := p.parseAssignOrExpressionStatement()
-			mc.BodyBlock = &BlockStatement{Statements: []Statement{assignStmt}}
 		} else {
-			mc.Body = p.parseExpression(LOWEST)
+			// Parse as a statement (handles assignments, compound assignments,
+			// member access assignments like counts.A += 1, and expressions)
+			armStmt := p.parseAssignOrExpressionStatement()
+			mc.BodyBlock = &BlockStatement{Statements: []Statement{armStmt}}
 		}
 		stmt.Cases = append(stmt.Cases, mc)
 		p.nextToken()

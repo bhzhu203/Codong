@@ -1036,7 +1036,7 @@ func cDbPing() Value {
 func cDbStats() Value {
 	if cDB == nil { return cError("E2002", "no database connection") }
 	stats := cDB.Stats()
-	return cMap("open_connections", float64(stats.OpenConnections), "in_use", float64(stats.InUse), "idle", float64(stats.Idle))
+	return cMap("open_connections", float64(stats.OpenConnections), "in_use", float64(stats.InUse), "idle", float64(stats.Idle), "total", float64(stats.OpenConnections), "max_open", float64(stats.MaxOpenConnections), "wait_count", float64(stats.WaitCount))
 }
 
 func cDbDisconnectRT() Value {
@@ -1732,8 +1732,10 @@ func cErrorRetry(fn Value, opts Value) Value {
 	for i := 0; i < max; i++ {
 		result := cCallFn(fn)
 		if e, ok := result.(*CodongError); ok {
+			if !e.Retry {
+				return result // non-retryable error, stop immediately
+			}
 			lastErr = result
-			_ = e
 			if delayDur > 0 && i < max-1 { time.Sleep(delayDur) }
 			continue
 		}

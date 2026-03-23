@@ -332,12 +332,53 @@ func (l *Lexer) readNumber() string {
 // readString reads a double-quoted string literal, processing escape
 // sequences. String interpolation expressions like {name} are included
 // verbatim in the literal; the parser handles splitting them out.
+// Inside {…} interpolation blocks, nested quotes are preserved so that
+// expressions like {words.join("-").upper()} work correctly.
 func (l *Lexer) readString() string {
 	l.readChar() // consume opening '"'
 	var result []byte
+	braceDepth := 0
 	for {
-		if l.ch == '"' || l.ch == 0 {
+		if l.ch == 0 {
 			break
+		}
+		if l.ch == '"' && braceDepth == 0 {
+			break
+		}
+		if l.ch == '{' {
+			braceDepth++
+			result = append(result, l.ch)
+			l.readChar()
+			continue
+		}
+		if l.ch == '}' && braceDepth > 0 {
+			braceDepth--
+			result = append(result, l.ch)
+			l.readChar()
+			continue
+		}
+		if l.ch == '"' && braceDepth > 0 {
+			// Inside interpolation — read the nested string literal
+			result = append(result, l.ch)
+			l.readChar() // consume opening '"'
+			for l.ch != '"' && l.ch != 0 {
+				if l.ch == '\\' {
+					result = append(result, l.ch)
+					l.readChar()
+					if l.ch != 0 {
+						result = append(result, l.ch)
+						l.readChar()
+					}
+				} else {
+					result = append(result, l.ch)
+					l.readChar()
+				}
+			}
+			if l.ch == '"' {
+				result = append(result, l.ch)
+				l.readChar() // consume closing '"'
+			}
+			continue
 		}
 		if l.ch == '\\' {
 			result = append(result, l.readEscape()...)

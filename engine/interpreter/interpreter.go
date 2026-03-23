@@ -141,12 +141,11 @@ func (e *Environment) Set(name string, val Object) Object {
 		e.store[name] = val
 		return val
 	}
-	// If we are at a function boundary, don't propagate new assignments
-	// to the outer scope — create a new local binding instead.
-	// This ensures that plain assignment inside a function doesn't
-	// modify the enclosing scope. Compound assignments (+=, etc.)
-	// use SetOuter which still propagates through function boundaries.
-	if e.outer != nil && !e.isFunction {
+	// Look up outer scope chain. If the variable already exists in any
+	// enclosing scope, update it there — even across function boundaries.
+	// This allows closures to modify captured variables via plain assignment.
+	// Only truly NEW variables are created locally (not propagated).
+	if e.outer != nil {
 		if _, exists := e.outer.Get(name); exists {
 			return e.outer.Set(name, val)
 		}

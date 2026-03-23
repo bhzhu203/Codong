@@ -9,10 +9,11 @@ import (
 
 // Generator converts a Codong AST to Go source code.
 type Generator struct {
-	indent   int
-	output   strings.Builder
-	declared map[string]bool // tracks declared variables
-	consts   map[string]bool // tracks const bindings
+	indent      int
+	output      strings.Builder
+	declared    map[string]bool // tracks declared variables
+	consts      map[string]bool // tracks const bindings
+	inTryCatch  bool            // true when generating code inside a try/catch block
 }
 
 // Generate produces a complete Go program from a Codong AST.
@@ -126,10 +127,19 @@ func (g *Generator) genStatement(stmt parser.Statement) {
 	case *parser.IndexAssignStatement:
 		g.writef("cSetIndex(%s, %s, %s)", g.genExpr(s.Left), g.genExpr(s.Index), g.genExpr(s.Value))
 	case *parser.ReturnStatement:
-		if s.Value != nil {
-			g.writef("return %s", g.genExpr(s.Value))
+		if g.inTryCatch {
+			// Inside try/catch closure, use panic to propagate return to outer function
+			if s.Value != nil {
+				g.writef("panic(&cReturnSignal{Value: %s})", g.genExpr(s.Value))
+			} else {
+				g.write("panic(&cReturnSignal{Value: nil})")
+			}
 		} else {
-			g.write("return nil")
+			if s.Value != nil {
+				g.writef("return %s", g.genExpr(s.Value))
+			} else {
+				g.write("return nil")
+			}
 		}
 	case *parser.FunctionDefinition:
 		g.genFuncDef(s)
@@ -315,6 +325,7 @@ func (g *Generator) genForIn(s *parser.ForInStatement) {
 	g.genBlock(s.Body)
 	g.indent--
 	g.write("}")
+	g.writef("_ = %s", goVarName)
 }
 
 func (g *Generator) genWhile(s *parser.WhileStatement) {
@@ -328,6 +339,9 @@ func (g *Generator) genWhile(s *parser.WhileStatement) {
 
 func (g *Generator) genMatch(s *parser.MatchStatement) {
 	subj := g.genExpr(s.Subject)
+	// Wrap in a block to avoid _match_subj redeclare when multiple match statements exist
+	g.write("{")
+	g.indent++
 	if subj == "nil" {
 		g.write("var _match_subj Value = nil")
 	} else {
@@ -359,6 +373,8 @@ func (g *Generator) genMatch(s *parser.MatchStatement) {
 	if len(s.Cases) > 0 {
 		g.write("}")
 	}
+	g.indent--
+	g.write("}")
 }
 
 func (g *Generator) genTryCatch(s *parser.TryCatchStatement) {
@@ -369,6 +385,8 @@ func (g *Generator) genTryCatch(s *parser.TryCatchStatement) {
 		g.declared[catchVar] = true
 	}
 	g.writef("_ = %s", goVar)
+	prevInTryCatch := g.inTryCatch
+	g.inTryCatch = true
 	g.write("func() {")
 	g.indent++
 	g.write("defer func() {")
@@ -379,6 +397,9 @@ func (g *Generator) genTryCatch(s *parser.TryCatchStatement) {
 	g.writef("if _ce, ok := _r.(*CodongError); ok {")
 	g.indent++
 	g.writef("%s = _ce", goVar)
+	// Save declared state before first catch generation
+	declaredBefore := make(map[string]bool)
+	for k, v := range g.declared { declaredBefore[k] = v }
 	g.genBlock(s.Catch)
 	g.write("return")
 	g.indent--
@@ -389,10 +410,14 @@ func (g *Generator) genTryCatch(s *parser.TryCatchStatement) {
 	g.writef("if _ce, ok := _rs.Value.(*CodongError); ok {")
 	g.indent++
 	g.writef("%s = _ce", goVar)
+	// Restore declared state so catch block vars are re-declared in this branch
+	g.declared = declaredBefore
 	g.genBlock(s.Catch)
 	g.write("return")
 	g.indent--
 	g.write("}")
+	// Non-error return signal — re-panic to propagate to enclosing function
+	g.write("panic(_r)")
 	g.indent--
 	g.write("}")
 	// Re-panic for non-error panics
@@ -405,6 +430,7 @@ func (g *Generator) genTryCatch(s *parser.TryCatchStatement) {
 	g.genBlock(s.Try)
 	g.indent--
 	g.write("}()")
+	g.inTryCatch = prevInTryCatch
 }
 
 func (g *Generator) genExpr(expr parser.Expression) string {

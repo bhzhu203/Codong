@@ -898,7 +898,7 @@ fn with_retry(op, max_tries) {
     i = 0
     while i < max_tries {
         result = op()
-        if type_of(result) != "map" { return result }
+        if type_of(result) != "error" { return result }
         if !error.is(result, "E_FAIL") { return result }
         i += 1
     }
