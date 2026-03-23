@@ -102,7 +102,8 @@ func evalFile(path string) {
 
 	if len(p.Errors()) > 0 {
 		for _, e := range p.Errors() {
-			writeJSONError("syntax", "E1001_SYNTAX_ERROR", e, "check syntax")
+			fmt.Fprintf(os.Stderr, "[E1001_SYNTAX_ERROR] %s\n", e)
+			fmt.Fprintln(os.Stderr, "  fix: check syntax")
 		}
 		os.Exit(2)
 	}

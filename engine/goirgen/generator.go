@@ -88,7 +88,7 @@ func (g *Generator) genStatement(stmt parser.Statement) {
 			g.writef("_ = %s", g.genExpr(s.Value))
 		} else if g.consts[name] {
 			// const reassignment → runtime error
-			g.writef("cPrintError(\"E1001_SYNTAX_ERROR\", \"cannot assign to const '%s'\")", name)
+			g.writef("cPrintError(\"E1001_SYNTAX_ERROR\", \"cannot assign to const '%s'\", \"remove const declaration or use a different variable name\")", name)
 		} else if g.declared[name] || g.consts[name] {
 			g.writef("%s = %s", goName, g.genExpr(s.Value))
 		} else {
@@ -173,8 +173,19 @@ func (g *Generator) genFuncDef(s *parser.FunctionDefinition) {
 	for _, p := range s.Params { g.declared[p.Name] = true }
 	// Also copy outer function names so they can be called
 	for k := range outerDeclared { g.declared[k] = true }
-	g.writef("%s = func(args ...Value) Value {", goName)
+	g.writef("%s = func(args ...Value) (_ret Value) {", goName)
 	g.indent++
+	// Recover ? propagation — return error instead of panicking
+	g.write("defer func() {")
+	g.indent++
+	g.write("if _r := recover(); _r != nil {")
+	g.indent++
+	g.write("if _rs, ok := _r.(*cReturnSignal); ok { _ret = _rs.Value; return }")
+	g.write("panic(_r)")
+	g.indent--
+	g.write("}")
+	g.indent--
+	g.write("}()")
 	// Pre-declare all new variables in function body
 	bodyVars := collectAssignedVars(s.Body)
 	for _, p := range s.Params { delete(bodyVars, p.Name) }
@@ -532,9 +543,9 @@ func (g *Generator) genInfix(op, left, right string) string {
 	case ">=":
 		return fmt.Sprintf("cGte(%s, %s)", left, right)
 	case "&&":
-		return fmt.Sprintf("(isTruthy(%s) && isTruthy(%s))", left, right)
+		return fmt.Sprintf("cAnd(%s, func() Value { return %s })", left, right)
 	case "||":
-		return fmt.Sprintf("(isTruthy(%s) || isTruthy(%s))", left, right)
+		return fmt.Sprintf("cOr(%s, func() Value { return %s })", left, right)
 	}
 	return "nil"
 }

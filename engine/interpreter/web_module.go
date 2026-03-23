@@ -144,6 +144,8 @@ func (i *Interpreter) webServe(args []Object) Object {
 		}
 	}
 
+	fmt.Fprintf(os.Stderr, "web.serve(port:%d) — eval mode: server will start, use `codong run` for production\n", port)
+
 	srvObj := &ServerObject{
 		port: port,
 		done: make(chan error, 1),

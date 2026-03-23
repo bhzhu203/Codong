@@ -2,7 +2,6 @@ package runner
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -24,12 +23,8 @@ func Run(codFile string) error {
 	goSource, parseErrors := compile(string(source))
 	if len(parseErrors) > 0 {
 		for _, e := range parseErrors {
-			ce := map[string]interface{}{
-				"code": "E1001_SYNTAX_ERROR", "error": "syntax",
-				"message": e, "fix": "check syntax", "retry": false,
-			}
-			jsonBytes, _ := json.Marshal(ce)
-			fmt.Println(string(jsonBytes))
+			fmt.Printf("[E1001_SYNTAX_ERROR] %s\n", e)
+			fmt.Println("  fix: check syntax")
 		}
 		return fmt.Errorf("parse errors")
 	}
@@ -60,26 +55,11 @@ func compile(source string) (string, []string) {
 	p := parser.New(l)
 	program := p.ParseProgram()
 	if len(p.Errors()) > 0 {
-		// Wrap parse errors in Codong error JSON format
-		var jsonErrors []string
+		var errs []string
 		for _, e := range p.Errors() {
-			ce := struct {
-				Code    string `json:"code"`
-				Error   string `json:"error"`
-				Message string `json:"message"`
-				Fix     string `json:"fix"`
-				Retry   bool   `json:"retry"`
-			}{
-				Code:    "E1001_SYNTAX_ERROR",
-				Error:   "runtime",
-				Message: e,
-				Fix:     "check your syntax",
-				Retry:   false,
-			}
-			jb, _ := json.Marshal(ce)
-			jsonErrors = append(jsonErrors, string(jb))
+			errs = append(errs, e)
 		}
-		return "", jsonErrors
+		return "", errs
 	}
 	goSource := goirgen.Generate(program)
 	return goSource, nil
@@ -152,19 +132,26 @@ require modernc.org/sqlite v1.47.0
 				// Convert Go compile errors to Codong error format
 				codongErr := translateGoError(stderr)
 				fmt.Print(codongErr) // to stdout for test compatibility
-				return fmt.Errorf("exit status 1")
+				os.Exit(1)
 			}
 			// Check for runtime panics and convert to Codong errors
 			if strings.Contains(stderr, "goroutine") && strings.Contains(stderr, "panic") {
 				codongErr := translateRuntimePanic(stderr)
 				if codongErr != "" {
 					fmt.Print(codongErr)
-					return fmt.Errorf("exit status 1")
+					os.Exit(1)
 				}
+			}
+			// If stderr is empty or only contains "exit status N" from go run,
+			// the program already handled the error output
+			// (e.g., via cPanicExit which prints to stdout and calls os.Exit)
+			trimmed := strings.TrimSpace(stderr)
+			if trimmed == "" || strings.HasPrefix(trimmed, "exit status") {
+				os.Exit(1)
 			}
 			// Runtime error — pass through
 			fmt.Fprint(os.Stderr, stderrBuf.String())
-			return err
+			os.Exit(1)
 		}
 		// Success — pass through any stderr (like server listening messages)
 		if stderrBuf.Len() > 0 {
@@ -217,8 +204,11 @@ func translateRuntimePanic(stderr string) string {
 		return ""
 	}
 
-	jsonBytes, _ := json.Marshal(ce)
-	return string(jsonBytes) + "\n"
+	s := fmt.Sprintf("[%s] %s\n", ce.Code, ce.Message)
+	if ce.Fix != "" {
+		s += fmt.Sprintf("  fix: %s\n", ce.Fix)
+	}
+	return s
 }
 
 // translateGoError converts Go compiler errors to Codong error format.
@@ -309,8 +299,11 @@ func translateGoError(stderr string) string {
 			continue
 		}
 
-		jsonBytes, _ := json.Marshal(ce)
-		return string(jsonBytes) + "\n"
+		s := fmt.Sprintf("[%s] %s\n", ce.Code, ce.Message)
+		if ce.Fix != "" {
+			s += fmt.Sprintf("  fix: %s\n", ce.Fix)
+		}
+		return s
 	}
 
 	// If no pattern matched, return original

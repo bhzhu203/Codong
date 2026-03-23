@@ -56,7 +56,11 @@ type CodongError struct {
 }
 
 func (e *CodongError) Error() string {
-	return fmt.Sprintf("[%s] %s", e.Code, e.Message)
+	s := fmt.Sprintf("[%s] %s", e.Code, e.Message)
+	if e.Fix != "" {
+		s += fmt.Sprintf("\n  fix: %s", e.Fix)
+	}
+	return s
 }
 
 // CodongFn wraps a Codong function value.
@@ -208,6 +212,18 @@ func isTruthy(v Value) bool {
 	if v == nil { return false }
 	if b, ok := v.(bool); ok { return b }
 	return true
+}
+
+// cOr implements short-circuit || that returns the first truthy value (not a boolean)
+func cOr(a Value, b func() Value) Value {
+	if isTruthy(a) { return a }
+	return b()
+}
+
+// cAnd implements short-circuit && that returns values (not a boolean)
+func cAnd(a Value, b func() Value) Value {
+	if !isTruthy(a) { return a }
+	return b()
 }
 
 func typeOf(v Value) string {
@@ -676,8 +692,11 @@ func cPrintV(v Value) Value {
 	return nil
 }
 
-func cPrintError(code, msg string) {
+func cPrintError(code, msg string, opts ...string) {
 	e := cError(code, msg)
+	if len(opts) > 0 && opts[0] != "" {
+		e.Fix = opts[0]
+	}
 	cPanicExit(e)
 }
 
@@ -690,12 +709,10 @@ func cPrintMultiErr(count int) Value {
 func cDiscard(_ Value) {}
 
 func cPanicExit(ce *CodongError) {
-	data := map[string]interface{}{
-		"code": ce.Code, "error": "runtime", "message": ce.Message,
-		"fix": ce.Fix, "retry": ce.Retry,
+	fmt.Printf("[%s] %s\n", ce.Code, ce.Message)
+	if ce.Fix != "" {
+		fmt.Printf("  fix: %s\n", ce.Fix)
 	}
-	jb, _ := json.Marshal(data)
-	fmt.Println(string(jb))
 	os.Exit(1)
 }
 
@@ -1032,6 +1049,22 @@ func cDbDisconnect() {
 	if cDB != nil { cDB.Close(); cDB = nil }
 }
 
+// cDbError classifies a database error and returns the appropriate CodongError.
+func cDbError(err error) *CodongError {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "UNIQUE constraint failed"):
+		return cError("E2002_DUPLICATE_KEY", msg)
+	case strings.Contains(msg, "syntax error") ||
+		strings.Contains(msg, "no such table") ||
+		strings.Contains(msg, "no such column") ||
+		strings.Contains(msg, "near \""):
+		return cError("E2004_QUERY_FAILED", msg)
+	default:
+		return cError("E2003", msg)
+	}
+}
+
 func cDbQuery(sqlStr string, params ...Value) Value {
 	if cDB == nil { return cError("E2002", "no database connection") }
 	args := make([]interface{}, len(params))
@@ -1039,12 +1072,12 @@ func cDbQuery(sqlStr string, params ...Value) Value {
 	trimmed := strings.TrimSpace(strings.ToUpper(sqlStr))
 	if strings.HasPrefix(trimmed, "SELECT") {
 		rows, err := cDbQueryRows(sqlStr, args...)
-		if err != nil { return cError("E2003", err.Error()) }
+		if err != nil { return cDbError(err) }
 		defer rows.Close()
 		return rowsToList(rows)
 	}
 	result, err := cDbExec(sqlStr, args...)
-	if err != nil { return cError("E2003", err.Error()) }
+	if err != nil { return cDbError(err) }
 	aff, _ := result.RowsAffected()
 	lid, _ := result.LastInsertId()
 	return cMap("affected", float64(aff), "id", float64(lid))
@@ -1058,7 +1091,7 @@ func cDbCount(table string, filterVal Value) Value {
 	q := "SELECT COUNT(*) FROM " + table
 	if where != "" { q += " WHERE " + where }
 	var count int64
-	if err := cDbQueryRowOne(q, args...).Scan(&count); err != nil { return cError("E2003", err.Error()) }
+	if err := cDbQueryRowOne(q, args...).Scan(&count); err != nil { return cDbError(err) }
 	return float64(count)
 }
 
@@ -1079,7 +1112,7 @@ func cDbInsert(table string, dataVal Value) Value {
 	}
 	q := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", table, strings.Join(cols, ","), strings.Join(phs, ","))
 	r, err := cDbExec(q, vals...)
-	if err != nil { return cError("E2003", err.Error()) }
+	if err != nil { return cDbError(err) }
 	id, _ := r.LastInsertId()
 	// Return the inserted row (include original data + id)
 	result := cMap()
@@ -1108,7 +1141,7 @@ func cDbCreateIndex(table string, colsVal Value) Value {
 	name := "idx_" + table + "_" + strings.ReplaceAll(cols, ",", "_")
 	q := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (%s)", name, table, cols)
 	_, err := cDbExec(q)
-	if err != nil { return cError("E2003", err.Error()) }
+	if err != nil { return cDbError(err) }
 	return true
 }
 
@@ -1120,7 +1153,7 @@ func cDbFind(table string, filterVal Value) *CodongList {
 	q := "SELECT * FROM " + table
 	if where != "" { q += " WHERE " + where }
 	rows, err := cDbQueryRows(q, args...)
-	if err != nil { cPrint(cError("E2003", err.Error())); return &CodongList{} }
+	if err != nil { cPrint(cDbError(err)); return &CodongList{} }
 	defer rows.Close()
 	return rowsToList(rows)
 }
@@ -1150,7 +1183,7 @@ func cDbFindOpts(table string, filterVal Value, optsVal Value) Value {
 		}
 	}
 	rows, err := cDbQueryRows(q, args...)
-	if err != nil { cPrint(cError("E2003", err.Error())); return &CodongList{} }
+	if err != nil { cPrint(cDbError(err)); return &CodongList{} }
 	defer rows.Close()
 	return rowsToList(rows)
 }
@@ -1183,7 +1216,7 @@ func cDbUpdate(table string, filterVal Value, dataVal Value) Value {
 	q := fmt.Sprintf("UPDATE %s SET %s", table, strings.Join(setClauses, ","))
 	if where != "" { q += " WHERE " + where }
 	r, err := cDbExec(q, allArgs...)
-	if err != nil { return cError("E2003", err.Error()) }
+	if err != nil { return cDbError(err) }
 	aff, _ := r.RowsAffected()
 	return float64(aff)
 }
@@ -1195,7 +1228,7 @@ func cDbDelete(table string, filterVal Value) Value {
 	q := "DELETE FROM " + table
 	if where != "" { q += " WHERE " + where }
 	r, err := cDbExec(q, args...)
-	if err != nil { return cError("E2003", err.Error()) }
+	if err != nil { return cDbError(err) }
 	aff, _ := r.RowsAffected()
 	return float64(aff)
 }
@@ -1207,22 +1240,31 @@ func cDbCreateTable(table string, schema Value) Value {
 	var cols []string
 	for _, k := range m.Order {
 		colType := toString(m.Entries[k])
-		sqlType := "TEXT"
-		switch strings.ToLower(colType) {
-		case "number", "int", "integer": sqlType = "INTEGER"
-		case "float", "real": sqlType = "REAL"
-		case "bool", "boolean": sqlType = "INTEGER"
-		case "text", "string": sqlType = "TEXT"
-		}
-		if strings.ToLower(k) == "id" {
-			cols = append(cols, k+" INTEGER PRIMARY KEY AUTOINCREMENT")
+		// If the value contains SQL keywords like "primary key", "unique", etc.,
+		// pass through as raw SQL column definition
+		lower := strings.ToLower(colType)
+		if strings.Contains(lower, "primary key") || strings.Contains(lower, "unique") ||
+			strings.Contains(lower, "not null") || strings.Contains(lower, "default") ||
+			strings.Contains(lower, "autoincrement") || strings.Contains(lower, "references") {
+			cols = append(cols, k+" "+colType)
 		} else {
-			cols = append(cols, k+" "+sqlType)
+			sqlType := "TEXT"
+			switch lower {
+			case "number", "int", "integer": sqlType = "INTEGER"
+			case "float", "real": sqlType = "REAL"
+			case "bool", "boolean": sqlType = "INTEGER"
+			case "text", "string": sqlType = "TEXT"
+			}
+			if strings.ToLower(k) == "id" {
+				cols = append(cols, k+" INTEGER PRIMARY KEY AUTOINCREMENT")
+			} else {
+				cols = append(cols, k+" "+sqlType)
+			}
 		}
 	}
 	q := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s)", table, strings.Join(cols, ", "))
 	_, err := cDbExec(q)
-	if err != nil { return cError("E2003", err.Error()) }
+	if err != nil { return cDbError(err) }
 	return true
 }
 
@@ -1251,7 +1293,7 @@ func cDbQueryOne(sqlStr string, params ...Value) Value {
 	args := make([]interface{}, len(params))
 	for i, p := range params { args[i] = valueToGo(p) }
 	rows, err := cDbQueryRows(sqlStr+" LIMIT 1", args...)
-	if err != nil { return cError("E2003", err.Error()) }
+	if err != nil { return cDbError(err) }
 	defer rows.Close()
 	list := rowsToList(rows)
 	if len(list.Elements) == 0 { return nil }
@@ -1263,7 +1305,7 @@ var cDbTx *sql.Tx // active transaction, if any
 func cDbTransaction(fn Value) Value {
 	if cDB == nil { return cError("E2002", "no database connection") }
 	tx, err := cDB.Begin()
-	if err != nil { return cError("E2003", err.Error()) }
+	if err != nil { return cDbError(err) }
 	cDbTx = tx
 	// Create a tx object with methods that work within the transaction
 	txObj := cMap("_type", "db_tx")
@@ -1349,7 +1391,7 @@ func cDbSort(table string, filterVal Value, order string) Value {
 		q += " ORDER BY " + sortField + " " + dir
 	}
 	rows, err := cDbQueryRows(q, args...)
-	if err != nil { return cError("E2003", err.Error()) }
+	if err != nil { return cDbError(err) }
 	defer rows.Close()
 	return rowsToList(rows)
 }

@@ -874,6 +874,16 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 			return &StringObject{Value: e.Error.Docs}
 		case "source":
 			return &StringObject{Value: e.Error.Source}
+		case "context":
+			if e.Error.Context != nil {
+				m := &MapObject{Entries: map[string]Object{}, Order: []string{}}
+				for k, v := range e.Error.Context {
+					m.Entries[k] = &StringObject{Value: fmt.Sprintf("%v", v)}
+					m.Order = append(m.Order, k)
+				}
+				return m
+			}
+			return NULL_OBJ
 		}
 	}
 
@@ -1070,6 +1080,32 @@ func (i *Interpreter) evalErrorModuleMethod(method string) Object {
 					return &StringObject{Value: ""}
 				}
 				return &StringObject{Value: codongerror.ToCompact(errObj.Error)}
+			case "from_json":
+				if len(args) < 1 {
+					return NULL_OBJ
+				}
+				jsonStr, ok := args[0].(*StringObject)
+				if !ok {
+					return NULL_OBJ
+				}
+				ce, err := codongerror.FromJSON(jsonStr.Value)
+				if err != nil {
+					return newRuntimeError("E1001", "invalid JSON: "+err.Error(), "")
+				}
+				return &ErrorObject{Error: ce}
+			case "from_compact":
+				if len(args) < 1 {
+					return NULL_OBJ
+				}
+				compactStr, ok := args[0].(*StringObject)
+				if !ok {
+					return NULL_OBJ
+				}
+				ce, err := codongerror.FromCompact(compactStr.Value)
+				if err != nil {
+					return newRuntimeError("E1001", "invalid compact format: "+err.Error(), "")
+				}
+				return &ErrorObject{Error: ce}
 			case "set_format":
 				if len(args) < 1 {
 					return NULL_OBJ
