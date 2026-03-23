@@ -398,6 +398,13 @@ func (i *Interpreter) evalAssign(node *parser.AssignStatement, env *Environment)
 	if isRuntimeError(val) {
 		return val
 	}
+	// If the value is a ReturnValue (from ? error propagation), unwrap it
+	// so that assignment captures the error instead of propagating.
+	captured := false
+	if rv, ok := val.(*ReturnValue); ok {
+		val = rv.Value
+		captured = true
+	}
 	// _ = expr discards the return value (side-effect only)
 	if node.Name.Value == "_" {
 		return NULL_OBJ
@@ -408,6 +415,11 @@ func (i *Interpreter) evalAssign(node *parser.AssignStatement, env *Environment)
 			"remove const declaration or use a different variable name")
 	}
 	env.Set(node.Name.Value, val)
+	// If we captured a propagated error via ?, return NULL to prevent
+	// the error from halting the program — the user captured it explicitly.
+	if captured {
+		return NULL_OBJ
+	}
 	return val
 }
 
@@ -877,8 +889,12 @@ func (i *Interpreter) applyFunction(fn Object, args []Object, named ...map[strin
 
 func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env *Environment) Object {
 	obj := i.Eval(node.Object, env)
+	// Allow field access on ErrorObject (e.code, e.message, e.fix etc.)
+	// Only propagate errors that are NOT ErrorObject (e.g., ReturnValue wrapping errors)
 	if isError(obj) {
-		return obj
+		if _, isErr := obj.(*ErrorObject); !isErr {
+			return obj
+		}
 	}
 	prop := node.Property.Value
 

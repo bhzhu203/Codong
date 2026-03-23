@@ -144,6 +144,12 @@ func (i *Interpreter) evalFsModuleMethod(prop string) Object {
 				}
 				path := args[0].Inspect()
 				absPath := interp.fsResolve(path)
+				// Check if path is a directory first
+				if info, statErr := os.Stat(absPath); statErr == nil && info.IsDir() {
+					return fsError("E5004_IS_DIRECTORY",
+						fmt.Sprintf("path is a directory: %s", path),
+						fmt.Sprintf("use fs.list(\"%s\") to read directory contents", path))
+				}
 				data, err := os.ReadFile(absPath)
 				if err != nil {
 					if os.IsNotExist(err) {
@@ -218,7 +224,7 @@ func (i *Interpreter) evalFsModuleMethod(prop string) Object {
 				absPath := interp.fsResolve(path)
 				if err := os.Remove(absPath); err != nil {
 					if os.IsNotExist(err) {
-						return fsError("E5001_FILE_NOT_FOUND", fmt.Sprintf("file not found: %s", path), fmt.Sprintf("check path: %s", absPath))
+						return TRUE_OBJ // idempotent delete
 					}
 					if os.IsPermission(err) {
 						return fsError("E5002_PERMISSION_DENIED", err.Error(), "check file permissions")
@@ -331,6 +337,14 @@ func (i *Interpreter) evalFsModuleMethod(prop string) Object {
 				if len(args) >= 2 {
 					if b, ok := args[1].(*BoolObject); ok && b.Value {
 						recursive = true
+					}
+					// Check for named arg: recursive:true
+					if m, ok := args[len(args)-1].(*MapObject); ok {
+						if rv, exists := m.Entries["recursive"]; exists {
+							if b, ok := rv.(*BoolObject); ok && b.Value {
+								recursive = true
+							}
+						}
 					}
 				}
 				if recursive {
@@ -583,6 +597,14 @@ func (i *Interpreter) evalJsonModuleMethod(prop string) Object {
 					if n, ok := args[1].(*NumberObject); ok {
 						indent = int(n.Value)
 					}
+					// Check for named args map (e.g., indent:2 passed as trailing MapObject)
+					if m, ok := args[len(args)-1].(*MapObject); ok {
+						if indentVal, exists := m.Entries["indent"]; exists {
+							if n, ok := indentVal.(*NumberObject); ok {
+								indent = int(n.Value)
+							}
+						}
+					}
 				}
 				var data []byte
 				var err error
@@ -715,12 +737,10 @@ func jsonGetPath(data interface{}, path string, defaultVal interface{}) interfac
 		}
 		cur, ok = m[part]
 		if !ok {
-			return defaultVal
+			return defaultVal // key doesn't exist - use default
 		}
 	}
-	if cur == nil {
-		return defaultVal
-	}
+	// Return cur even if nil — null values are explicitly set, not missing
 	return cur
 }
 

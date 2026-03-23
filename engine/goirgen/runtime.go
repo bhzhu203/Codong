@@ -172,7 +172,9 @@ func toString(v Value) string {
 	case *CodongMap:
 		return "{...}"
 	case *CodongError:
-		return s.Error()
+		// Errors print as "null" when used as values (e.g., print(fs.read("missing")))
+		// Access error fields via .code, .message, .fix etc.
+		return "null"
 	case func(...Value) Value:
 		return "fn (...)"
 	}
@@ -680,9 +682,22 @@ func cCall(obj Value, method string, args ...Value) Value {
 					if len(args) > 0 { validator = args[0] }
 					return cMap("_mw_type", "auth_bearer", "validator", validator)
 				case "multipart":
-					return cMap("_mw_type", "multipart")
+					m := cMap("_mw_type", "multipart")
+					if len(args) > 0 {
+						if opts, ok := args[0].(*CodongMap); ok {
+							if v, exists := opts.Entries["max_file_size"]; exists { cSet(m, "max_file_size", v) }
+							if v, exists := opts.Entries["allowed_types"]; exists { cSet(m, "allowed_types", v) }
+						}
+					}
+					return m
 				case "session":
-					return cMap("_mw_type", "session")
+					m := cMap("_mw_type", "session")
+					if len(args) > 0 {
+						if opts, ok := args[0].(*CodongMap); ok {
+							for k, v := range opts.Entries { cSet(m, k, v) }
+						}
+					}
+					return m
 				}
 			case "group":
 				prefix := toString(o.Entries["prefix"])
@@ -761,14 +776,17 @@ func cRange(start, end float64) *CodongList {
 type cReturnSignal struct{ Value Value }
 
 func cPropagate(v Value) Value {
-	if e, ok := v.(*CodongError); ok {
-		panic(&cReturnSignal{Value: e})
+	// The ? operator converts errors into assignable values.
+	// If the value is a CodongError, return it so it can be assigned and inspected.
+	// If the value is nil (from operations that return nil on failure), return it as-is.
+	if _, ok := v.(*CodongError); ok {
+		return v
 	}
 	// Check for map responses with an "error" field (e.g., HTTP responses)
 	if m, ok := v.(*CodongMap); ok {
 		if errVal, ok := m.Entries["error"]; ok {
-			if e, ok := errVal.(*CodongError); ok {
-				panic(&cReturnSignal{Value: e})
+			if _, ok := errVal.(*CodongError); ok {
+				return errVal
 			}
 		}
 	}
@@ -782,6 +800,17 @@ var cWebServers []*struct{ port int }
 var cWebMiddlewares []Value
 var cWebMiddlewareNS = &CodongMap{Entries: map[string]interface{}{"_type": "web_middleware_ns"}, Order: []string{"_type"}}
 var cWebAuthContext Value // stores auth context from middleware for current request
+
+// Session support
+var cSessionStore = make(map[string]*CodongMap)
+var cSessionMu sync.Mutex
+type cSessionContext struct {
+	id     string
+	data   *CodongMap
+	name   string
+	maxAge int
+}
+var cCurrentSession *cSessionContext
 
 func cWebRoute(method string, pattern Value, handler Value) Value {
 	p := toString(pattern)
@@ -878,6 +907,11 @@ func cWebServe(port int) Value {
 				}
 			}
 			cSet(reqMap, "context", ctxMap)
+			// Session data (from session middleware)
+			if cCurrentSession != nil {
+				sess := cCurrentSession.data
+				cSet(reqMap, "session", sess)
+			}
 			// query_all() returns the full query map
 			cSet(reqMap, "query_all", func(args ...Value) Value { return qm })
 			// Parse body (with multipart support)
@@ -940,6 +974,36 @@ func cWebServe(port int) Value {
 					}()
 					prev.ServeHTTP(w, r)
 				})
+			case "session":
+				sessionName := "sid"
+				sessionMaxAge := 3600
+				if sn, ok := m.Entries["name"].(string); ok && sn != "" && sn != "null" { sessionName = sn }
+				if ma, ok := m.Entries["max_age"]; ok { sessionMaxAge = int(toFloat(ma)) }
+				sName := sessionName
+				sMaxAge := sessionMaxAge
+				prevS := finalHandler
+				finalHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					// Read session ID from cookie
+					var sessID string
+					if c, err := r.Cookie(sName); err == nil { sessID = c.Value }
+					if sessID == "" {
+						sessID = fmt.Sprintf("sess-%d-%d", time.Now().UnixNano(), cWsIDCounter)
+						cWsIDMu.Lock(); cWsIDCounter++; cWsIDMu.Unlock()
+					}
+					// Get or create session data
+					cSessionMu.Lock()
+					sess, ok := cSessionStore[sessID]
+					if !ok { sess = cMap(); cSessionStore[sessID] = sess }
+					cSessionMu.Unlock()
+					// Store session in context for request handler
+					cCurrentSession = &cSessionContext{id: sessID, data: sess, name: sName, maxAge: sMaxAge}
+					// Set session cookie BEFORE response is written
+					http.SetCookie(w, &http.Cookie{Name: sName, Value: sessID, Path: "/", MaxAge: sMaxAge, HttpOnly: true})
+					prevS.ServeHTTP(w, r)
+					cCurrentSession = nil
+				})
+			case "multipart":
+				// multipart middleware is handled at parse time, not as HTTP middleware
 			case "auth_bearer":
 				validator := m.Entries["validator"]
 				finalHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1008,6 +1072,11 @@ func writeResponse(w http.ResponseWriter, req *http.Request, result Value) {
 			url := toString(m.Entries["url"])
 			http.Redirect(w, req, url, status)
 			return
+		case "sse":
+			if handler, ok := m.Entries["_handler"]; ok {
+				writeSSEResponse(w, req, handler)
+				return
+			}
 		default:
 			if w.Header().Get("Content-Type") == "" { w.Header().Set("Content-Type", "application/json") }
 			w.WriteHeader(200)
@@ -1049,6 +1118,66 @@ func cWebResponse(args ...Value) *CodongMap {
 		if h, ok := args[2].(*CodongMap); ok { cSet(m, "headers", h) }
 	}
 	return m
+}
+
+// --- SSE (Server-Sent Events) ---
+
+// CodongSSEStream provides send/close methods for SSE streaming
+type CodongSSEStream struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+	closed  bool
+}
+
+func cWebSSE(handler Value) *CodongMap {
+	return cMap("_type", "sse", "_handler", handler)
+}
+
+func writeSSEResponse(w http.ResponseWriter, req *http.Request, handler Value) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", 500)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(200)
+	flusher.Flush()
+
+	stream := &CodongSSEStream{w: w, flusher: flusher}
+
+	// Create a stream object with send/close methods
+	streamObj := cMap()
+	streamMap := streamObj
+	sendFn := func(args ...Value) Value {
+		if stream.closed { return nil }
+		event := "message"
+		var data Value
+		if len(args) > 0 { event = toString(args[0]) }
+		if len(args) > 1 { data = args[1] }
+		jb, _ := json.Marshal(valueToGo(data))
+		fmt.Fprintf(stream.w, "event: %s\ndata: %s\n\n", event, string(jb))
+		stream.flusher.Flush()
+		return nil
+	}
+	closeFn := func(args ...Value) Value {
+		stream.closed = true
+		return nil
+	}
+	streamMap.Entries["send"] = CodongFn(sendFn)
+	streamMap.Entries["close"] = CodongFn(closeFn)
+	if _, ok := streamMap.Entries["send"]; !ok {
+		streamMap.Order = append(streamMap.Order, "send")
+	}
+	if _, ok := streamMap.Entries["close"]; !ok {
+		streamMap.Order = append(streamMap.Order, "close")
+	}
+
+	// Call the handler with the stream object
+	if fn, ok := handler.(CodongFn); ok {
+		fn(streamObj)
+	}
 }
 
 // --- web.static() ---
@@ -1182,7 +1311,11 @@ func cServeStaticFile(w http.ResponseWriter, r *http.Request, path string, info 
 		w.Header().Set("ETag", etag)
 		if r.Header.Get("If-None-Match") == etag { w.WriteHeader(304); return }
 	}
-	http.ServeFile(w, r, path)
+	// Serve file directly (avoid http.ServeFile which adds redirect logic)
+	f, err := os.Open(path)
+	if err != nil { http.Error(w, "internal server error", 500); return }
+	defer f.Close()
+	http.ServeContent(w, r, filepath.Base(path), info.ModTime(), f)
 }
 
 // --- web.set_cookie / web.delete_cookie ---
@@ -1233,10 +1366,29 @@ func cWebDeleteCookie(args ...Value) Value {
 // --- Multipart parsing for request body ---
 
 func cParseMultipartBody(req *http.Request, reqMap *CodongMap) {
+	// Get multipart config from middleware
+	var maxFileSize int64 = 10 * 1024 * 1024 // default 10MB
+	var allowedTypes []string
+	for _, mw := range cWebMiddlewares {
+		if m, ok := mw.(*CodongMap); ok {
+			if toString(m.Entries["_mw_type"]) == "multipart" {
+				if mfs, ok := m.Entries["max_file_size"]; ok {
+					maxFileSize = cParseSize(toString(mfs))
+				}
+				if at, ok := m.Entries["allowed_types"].(*CodongList); ok {
+					for _, t := range at.Elements { allowedTypes = append(allowedTypes, toString(t)) }
+				}
+			}
+		}
+	}
+
 	mr, err := req.MultipartReader()
 	if err != nil { cSet(reqMap, "body", nil); cSet(reqMap, "files", cMap()); return }
 	filesMap := cMap()
 	bodyMap := cMap()
+	// Track multiple files per field name
+	filesListMap := make(map[string][]Value)
+	var allFiles []Value
 	var tmpFiles []string
 	for {
 		part, err := mr.NextPart()
@@ -1251,16 +1403,24 @@ func cParseMultipartBody(req *http.Request, reqMap *CodongMap) {
 		}
 		tmpFile, err := os.CreateTemp("", "codong-upload-*")
 		if err != nil { part.Close(); continue }
-		written, _ := io.Copy(tmpFile, io.LimitReader(part, 10*1024*1024+1))
+		written, _ := io.Copy(tmpFile, io.LimitReader(part, maxFileSize+1))
 		tmpFile.Close()
 		part.Close()
-		if written > 10*1024*1024 { os.Remove(tmpFile.Name()); continue }
-		tmpFiles = append(tmpFiles, tmpFile.Name())
-		ext := filepath.Ext(filename)
+		if written > maxFileSize { os.Remove(tmpFile.Name()); continue }
 		ct := part.Header.Get("Content-Type")
 		if ct == "" { ct = "application/octet-stream" }
+		// Check allowed types
+		if len(allowedTypes) > 0 {
+			allowed := false
+			for _, t := range allowedTypes { if t == ct { allowed = true; break } }
+			if !allowed { os.Remove(tmpFile.Name()); continue }
+		}
+		tmpFiles = append(tmpFiles, tmpFile.Name())
+		ext := filepath.Ext(filename)
 		fileObj := cMap("field_name", fieldName, "filename", filepath.Base(filename), "tmp_path", tmpFile.Name(), "size", float64(written), "content_type", ct, "mime", ct, "extension", ext)
 		cSet(filesMap, fieldName, fileObj)
+		filesListMap[fieldName] = append(filesListMap[fieldName], fileObj)
+		allFiles = append(allFiles, fileObj)
 	}
 	// Add get() to files
 	fsCopy := filesMap
@@ -1270,9 +1430,28 @@ func cParseMultipartBody(req *http.Request, reqMap *CodongMap) {
 	})
 	if len(bodyMap.Order) > 0 { cSet(reqMap, "body", bodyMap) } else { cSet(reqMap, "body", nil) }
 	cSet(reqMap, "files", filesMap)
-	// files_list and files_all
-	cSet(reqMap, "files_list", func(args ...Value) Value { return cList() })
-	cSet(reqMap, "files_all", func(args ...Value) Value { return cList() })
+	// files_list returns files for a specific field name
+	cSet(reqMap, "files_list", func(args ...Value) Value {
+		if len(args) > 0 {
+			if files, ok := filesListMap[toString(args[0])]; ok {
+				return &CodongList{Elements: files}
+			}
+		}
+		return cList()
+	})
+	// files_all returns all uploaded files
+	cSet(reqMap, "files_all", func(args ...Value) Value {
+		return &CodongList{Elements: allFiles}
+	})
+}
+
+func cParseSize(s string) int64 {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if strings.HasSuffix(s, "mb") { n, _ := strconv.ParseFloat(strings.TrimSuffix(s, "mb"), 64); return int64(n * 1024 * 1024) }
+	if strings.HasSuffix(s, "kb") { n, _ := strconv.ParseFloat(strings.TrimSuffix(s, "kb"), 64); return int64(n * 1024) }
+	if strings.HasSuffix(s, "b") { n, _ := strconv.ParseFloat(strings.TrimSuffix(s, "b"), 64); return int64(n) }
+	n, _ := strconv.ParseFloat(s, 64)
+	return int64(n)
 }
 
 // --- WebSocket support ---
@@ -2256,12 +2435,16 @@ func cFsResolve(path string) string {
 }
 
 func cFsRead(args ...Value) Value {
-	if len(args) < 1 { return nil }
+	if len(args) < 1 { return cError("E5001_FILE_NOT_FOUND", "fs.read requires a path argument", "fix", "fs.read(\"./file.txt\")") }
 	p := cFsResolve(toString(args[0]))
+	info, statErr := os.Stat(p)
+	if statErr == nil && info.IsDir() {
+		return cError("E5004_IS_DIRECTORY", fmt.Sprintf("path is a directory: %s", toString(args[0])), "fix", fmt.Sprintf("use fs.list(\"%s\") to read directory contents", toString(args[0])))
+	}
 	data, err := os.ReadFile(p)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil // not found returns null, use ? to propagate as error
+			return cError("E5001_FILE_NOT_FOUND", fmt.Sprintf("file not found: %s", toString(args[0])), "fix", fmt.Sprintf("check path: %s", p))
 		}
 		if os.IsPermission(err) {
 			return cError("E5002_PERMISSION_DENIED", fmt.Sprintf("permission denied: %s", toString(args[0])), "fix", "check file permissions")
@@ -2414,7 +2597,7 @@ func cFsReadJson(args ...Value) Value {
 	}
 	var result interface{}
 	if err := json.Unmarshal(data, &result); err != nil {
-		return cError("E6001_PARSE_ERROR", fmt.Sprintf("JSON parse error: %s", err.Error()), "fix", "check JSON syntax")
+		return cError("E6001_PARSE_ERROR", fmt.Sprintf("JSON parse error: %s", err.Error()), "fix", "check JSON syntax, use json.valid() first")
 	}
 	return goToCodong(result)
 }
@@ -2587,7 +2770,7 @@ func cJsonParse(args ...Value) Value {
 	s := toString(args[0])
 	var result interface{}
 	if err := json.Unmarshal([]byte(s), &result); err != nil {
-		return cError("E6001_PARSE_ERROR", fmt.Sprintf("JSON parse error: %s", err.Error()), "fix", "check JSON syntax")
+		return cError("E6001_PARSE_ERROR", fmt.Sprintf("JSON parse error: %s", err.Error()), "fix", "check JSON syntax, use json.valid() first")
 	}
 	return goToCodong(result)
 }
@@ -2659,7 +2842,8 @@ func cJsonGet(args ...Value) Value {
 		cur, ok = m[part]
 		if !ok { return defaultVal }
 	}
-	if cur == nil { return defaultVal }
+	// Return nil explicitly for null values (don't use default)
+	if cur == nil { return nil }
 	return goToCodong(cur)
 }
 

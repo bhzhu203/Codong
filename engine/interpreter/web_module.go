@@ -1102,7 +1102,14 @@ func serveStaticFile(w http.ResponseWriter, r *http.Request, path string, info o
 		}
 	}
 
-	http.ServeFile(w, r, path)
+	// Serve file directly (avoid http.ServeFile which adds redirect logic)
+	f, err := os.Open(path)
+	if err != nil {
+		http.Error(w, "internal server error", 500)
+		return
+	}
+	defer f.Close()
+	http.ServeContent(w, r, filepath.Base(path), info.ModTime(), f)
 }
 
 // ============================================================

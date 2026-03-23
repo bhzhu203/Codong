@@ -823,6 +823,11 @@ func (g *Generator) genWebCall(method string, args []string, named map[string]pa
 		return fmt.Sprintf("cMap(\"_type\", \"redirect\", \"url\", %s, \"status\", float64(302))", args[0])
 	case "response":
 		return fmt.Sprintf("cWebResponse(%s)", strings.Join(args, ", "))
+	case "sse":
+		if len(args) > 0 {
+			return fmt.Sprintf("cWebSSE(%s)", args[0])
+		}
+		return "nil"
 	case "static":
 		return fmt.Sprintf("cWebStatic(%s)", strings.Join(args, ", "))
 	case "set_cookie":

@@ -346,6 +346,34 @@ func (l *Lexer) readString() string {
 			break
 		}
 		if l.ch == '{' {
+			// Check if this looks like a JSON literal (e.g., {\"key\":...})
+			// If { is followed by \", read the entire JSON block as literal text
+			if braceDepth == 0 && l.peekChar() == '\\' && l.peekCharAt(1) == '"' {
+				// JSON-like block: read matching braces as literal text
+				jsonDepth := 1
+				result = append(result, l.ch) // append '{'
+				l.readChar()
+				for jsonDepth > 0 && l.ch != 0 {
+					if l.ch == '\\' && l.peekChar() == '"' {
+						// \" inside JSON literal — produce literal "
+						result = append(result, '"')
+						l.readChar() // skip '\'
+						l.readChar() // skip '"'
+					} else if l.ch == '{' {
+						jsonDepth++
+						result = append(result, l.ch)
+						l.readChar()
+					} else if l.ch == '}' {
+						jsonDepth--
+						result = append(result, l.ch)
+						l.readChar()
+					} else {
+						result = append(result, l.ch)
+						l.readChar()
+					}
+				}
+				continue
+			}
 			braceDepth++
 			result = append(result, l.ch)
 			l.readChar()

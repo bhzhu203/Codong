@@ -625,6 +625,13 @@ func (p *Parser) parseStringLiteral() Expression {
 	raw := p.curToken.Literal
 	// Check for interpolation: contains { and }
 	if strings.Contains(raw, "{") && strings.Contains(raw, "}") {
+		// Skip interpolation if it looks like a JSON literal:
+		// The first { is immediately followed by " (e.g., {"key":...})
+		braceIdx := strings.Index(raw, "{")
+		if braceIdx >= 0 && braceIdx+1 < len(raw) && raw[braceIdx+1] == '"' {
+			// Likely a JSON string — don't interpolate
+			return &StringLiteral{Token: p.curToken, Value: raw}
+		}
 		return p.parseInterpolatedString(raw)
 	}
 	return &StringLiteral{Token: p.curToken, Value: raw}
@@ -649,12 +656,17 @@ func (p *Parser) parseInterpolatedString(raw string) Expression {
 			break
 		}
 		exprStr := raw[i : i+endBrace]
-		// Parse the expression inside {}
-		exprLexer := lexer.New(exprStr)
-		exprParser := New(exprLexer)
-		expr := exprParser.parseExpression(LOWEST)
-		if expr != nil {
-			interp.Parts = append(interp.Parts, expr)
+		if exprStr == "" {
+			// Empty braces {} — treat as literal
+			interp.Parts = append(interp.Parts, &StringLiteral{Token: p.curToken, Value: "{}"})
+		} else {
+			// Parse the expression inside {}
+			exprLexer := lexer.New(exprStr)
+			exprParser := New(exprLexer)
+			expr := exprParser.parseExpression(LOWEST)
+			if expr != nil {
+				interp.Parts = append(interp.Parts, expr)
+			}
 		}
 		i += endBrace + 1
 	}
