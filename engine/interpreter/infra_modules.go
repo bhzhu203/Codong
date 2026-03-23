@@ -78,21 +78,43 @@ func (i *Interpreter) fsResolve(path string) string {
 func (i *Interpreter) fsSafeJoin(baseDir, userInput string) (string, bool) {
 	absBase := i.fsResolve(baseDir)
 
-	// URL-decode user input to handle %2f bypasses
-	decoded, err := url.PathUnescape(userInput)
-	if err != nil {
+	// Null byte check (before any processing)
+	if strings.ContainsRune(userInput, 0) || strings.Contains(userInput, "\\x00") || strings.Contains(userInput, "\x00") {
+		return "", false
+	}
+
+	// Reject absolute paths
+	if filepath.IsAbs(userInput) || strings.HasPrefix(userInput, "/") {
+		return "", false
+	}
+
+	// Reject backslash paths (Windows-style traversal)
+	if strings.Contains(userInput, "\\") {
+		return "", false
+	}
+
+	// URL-decode user input to handle %2f bypasses (loop to catch double-encoding)
+	decoded := userInput
+	for i := 0; i < 3; i++ {
+		d, err := url.PathUnescape(decoded)
+		if err != nil || d == decoded {
+			break
+		}
+		decoded = d
+	}
+
+	// Re-check after decoding
+	if strings.Contains(decoded, "..") {
+		return "", false
+	}
+	if filepath.IsAbs(decoded) || strings.HasPrefix(decoded, "/") {
 		return "", false
 	}
 
 	joined := filepath.Clean(filepath.Join(absBase, decoded))
 
-	// Strict prefix check — add separator to prevent /uploads matching /uploads_evil
+	// Strict prefix check
 	if !strings.HasPrefix(joined+string(filepath.Separator), absBase+string(filepath.Separator)) {
-		return "", false
-	}
-
-	// Null byte injection check
-	if strings.ContainsRune(joined, 0) {
 		return "", false
 	}
 

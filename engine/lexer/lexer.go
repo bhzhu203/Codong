@@ -381,6 +381,13 @@ func (l *Lexer) readString() string {
 			continue
 		}
 		if l.ch == '\\' {
+			// \{ and \} produce literal braces (not interpolation)
+			if l.peekChar() == '{' || l.peekChar() == '}' {
+				l.readChar() // consume '\'
+				result = append(result, l.ch)
+				l.readChar()
+				continue
+			}
 			result = append(result, l.readEscape()...)
 		} else {
 			if l.ch == '\n' {

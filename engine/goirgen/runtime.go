@@ -2261,7 +2261,7 @@ func cFsRead(args ...Value) Value {
 	data, err := os.ReadFile(p)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return cError("E5001_FILE_NOT_FOUND", fmt.Sprintf("file not found: %s", toString(args[0])), "fix", fmt.Sprintf("check path: %s", p))
+			return nil // not found returns null, use ? to propagate as error
 		}
 		if os.IsPermission(err) {
 			return cError("E5002_PERMISSION_DENIED", fmt.Sprintf("permission denied: %s", toString(args[0])), "fix", "check file permissions")
@@ -2309,7 +2309,7 @@ func cFsDelete(args ...Value) Value {
 	p := cFsResolve(toString(args[0]))
 	if err := os.Remove(p); err != nil {
 		if os.IsNotExist(err) {
-			return cError("E5001_FILE_NOT_FOUND", fmt.Sprintf("file not found: %s", toString(args[0])), "fix", "check path")
+			return true // idempotent delete
 		}
 		return cError("E5008_IO_ERROR", err.Error(), "fix", "check permissions")
 	}
@@ -2492,13 +2492,23 @@ func cFsSafeJoin(args ...Value) Value {
 	if len(args) < 2 { return nil }
 	base := cFsResolve(toString(args[0]))
 	userInput := toString(args[1])
-	decoded, err := url.PathUnescape(userInput)
-	if err != nil { return nil }
-	joined := filepath.Clean(filepath.Join(base, decoded))
-	if !strings.HasPrefix(joined+string(filepath.Separator), base+string(filepath.Separator)) {
-		return nil
+	// Null byte check
+	if strings.ContainsRune(userInput, 0) || strings.Contains(userInput, "\\x00") || strings.Contains(userInput, "\x00") { return nil }
+	// Reject absolute paths
+	if filepath.IsAbs(userInput) || strings.HasPrefix(userInput, "/") { return nil }
+	// Reject backslash paths
+	if strings.Contains(userInput, "\\") { return nil }
+	// URL decode (loop for double-encoding)
+	decoded := userInput
+	for i := 0; i < 3; i++ {
+		d, err := url.PathUnescape(decoded)
+		if err != nil || d == decoded { break }
+		decoded = d
 	}
-	if strings.ContainsRune(joined, 0) { return nil }
+	if strings.Contains(decoded, "..") { return nil }
+	if filepath.IsAbs(decoded) || strings.HasPrefix(decoded, "/") { return nil }
+	joined := filepath.Clean(filepath.Join(base, decoded))
+	if !strings.HasPrefix(joined+string(filepath.Separator), base+string(filepath.Separator)) { return nil }
 	return filepath.ToSlash(joined)
 }
 

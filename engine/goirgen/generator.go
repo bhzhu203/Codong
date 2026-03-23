@@ -32,6 +32,11 @@ func Generate(program *parser.Program, sourceDirs ...string) string {
 	g.output.WriteString(RuntimeSource)
 	g.output.WriteString("\n\nfunc main() {\n")
 	g.indent = 1
+	// Set working directory to source file's directory
+	if srcDir != "" {
+		g.write(fmt.Sprintf("cFsWorkDir = %q", srcDir))
+		g.write(fmt.Sprintf("os.Chdir(%q)", srcDir))
+	}
 	// Recover unhandled ? propagation
 	g.write("defer func() {")
 	g.indent++
