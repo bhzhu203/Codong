@@ -141,14 +141,16 @@ func (e *Environment) Set(name string, val Object) Object {
 		e.store[name] = val
 		return val
 	}
-	// Propagate to outer scopes, but STOP at function boundaries.
-	// This prevents fn f(){ x="in" } from modifying outer x.
-	// Closures that need to modify captured vars use SetOuter (via +=, -=).
-	if e.outer != nil && !e.isFunction {
+	// Propagate to outer scopes — even across function boundaries —
+	// but ONLY if the variable already exists in an outer scope.
+	// This allows closures to modify captured variables (idx = idx+1)
+	// while preventing new variable creation in outer scope.
+	if e.outer != nil {
 		if _, exists := e.outer.Get(name); exists {
 			return e.outer.Set(name, val)
 		}
 	}
+	// Variable not found anywhere — create locally
 	e.store[name] = val
 	return val
 }
