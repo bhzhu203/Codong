@@ -2377,7 +2377,10 @@ func cLlmAsk(args ...Value) Value {
 		}
 	}
 	if apiKey == "" {
-		if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" { apiKey = k; model = "claude-3-5-sonnet-20241022" }
+		if k := os.Getenv("ANTHROPIC_API_KEY"); k != "" {
+			apiKey = k
+			if !strings.HasPrefix(model, "claude") { model = "claude-sonnet-4-20250514" }
+		}
 	}
 	if apiKey == "" { return cError("E4005", "no API key", "fix", "export OPENAI_API_KEY") }
 	if prompt == "" { return cError("E1005", "no prompt provided") }
@@ -2414,21 +2417,35 @@ func cLlmAsk(args ...Value) Value {
 	if resp.StatusCode != 200 { return cError("E4001", string(respBody)) }
 	var result map[string]interface{}
 	json.Unmarshal(respBody, &result)
+	// Extract usage info
+	var promptTokens, completionTokens float64
+	if u, ok := result["usage"].(map[string]interface{}); ok {
+		if pt, ok := u["input_tokens"].(float64); ok { promptTokens = pt }
+		if pt, ok := u["prompt_tokens"].(float64); ok { promptTokens = pt }
+		if ct, ok := u["output_tokens"].(float64); ok { completionTokens = ct }
+		if ct, ok := u["completion_tokens"].(float64); ok { completionTokens = ct }
+	}
+	usageMap := cMap("prompt_tokens", promptTokens, "completion_tokens", completionTokens, "total_tokens", promptTokens+completionTokens)
+
 	// OpenAI format
 	if choices, ok := result["choices"].([]interface{}); ok && len(choices) > 0 {
 		if c, ok := choices[0].(map[string]interface{}); ok {
 			if m, ok := c["message"].(map[string]interface{}); ok {
-				if t, ok := m["content"].(string); ok { return t }
+				if t, ok := m["content"].(string); ok {
+					return cMap("text", t, "usage", usageMap, "model", model)
+				}
 			}
 		}
 	}
 	// Anthropic format
 	if content, ok := result["content"].([]interface{}); ok && len(content) > 0 {
 		if b, ok := content[0].(map[string]interface{}); ok {
-			if t, ok := b["text"].(string); ok { return t }
+			if t, ok := b["text"].(string); ok {
+				return cMap("text", t, "usage", usageMap, "model", model)
+			}
 		}
 	}
-	return string(respBody)
+	return cMap("text", string(respBody), "usage", usageMap, "model", model)
 }
 
 func cLlmCountTokens(text string) Value {
