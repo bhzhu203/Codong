@@ -750,6 +750,15 @@ func (i *Interpreter) evalIdentifier(node *parser.Identifier, env *Environment) 
 	if node.Value == "time" {
 		return timeModuleSingleton
 	}
+	if node.Value == "redis" {
+		return redisModuleSingleton
+	}
+	if node.Value == "image" {
+		return imageModuleSingleton
+	}
+	if node.Value == "oauth" {
+		return oauthModuleSingleton
+	}
 	// Check built-in functions
 	if builtin, ok := builtins[node.Value]; ok {
 		return builtin
@@ -997,6 +1006,45 @@ func (i *Interpreter) evalMemberAccess(node *parser.MemberAccessExpression, env 
 	// time module methods: time.now(), time.sleep(), etc.
 	if _, ok := obj.(*TimeModuleObject); ok {
 		return i.evalTimeModuleMethod(prop)
+	}
+
+	// redis module methods: redis.connect(), redis.set(), redis.get(), etc.
+	if _, ok := obj.(*RedisModuleObject); ok {
+		return i.evalRedisModuleMethod(prop)
+	}
+
+	// image module methods: image.open(), image.info(), etc.
+	if _, ok := obj.(*ImageModuleObject); ok {
+		return i.evalImageModuleMethod(prop)
+	}
+
+	// image object methods: img.resize(), img.save(), etc.
+	if img, ok := obj.(*CodongImageObject); ok {
+		return i.evalImageObjectMethod(img, prop)
+	}
+
+	// oauth module methods: oauth.provider(), oauth.sign_jwt(), etc.
+	if _, ok := obj.(*OAuthModuleObject); ok {
+		return i.evalOAuthModuleMethod(prop)
+	}
+
+	// db.using() result methods
+	if _, ok := obj.(*DbUsingObject); ok {
+		return i.evalDbModuleMethod(prop)
+	}
+
+	// redis lock object methods
+	if lock, ok := obj.(*RedisLockObject); ok {
+		if prop == "release" {
+			return &BuiltinFunction{
+				Name: "lock.release",
+				Fn: func(_ *Interpreter, _ ...Object) Object {
+					ctx := context.Background()
+					releaseLockScript.Run(ctx, lock.client, []string{lock.key}, lock.lockID)
+					return NULL_OBJ
+				},
+			}
+		}
 	}
 
 	// server object methods: server.get/post/put/delete/patch/close/group

@@ -802,6 +802,12 @@ func (g *Generator) genMethodCall(member *parser.MemberAccessExpression, argumen
 			return g.genEnvCall(method, args, named)
 		case "time":
 			return g.genTimeCall(method, args, named)
+		case "redis":
+			return g.genRedisCall(method, args, named)
+		case "image":
+			return g.genImageCall(method, args, named)
+		case "oauth":
+			return g.genOAuthCall(method, args, named)
 		}
 	}
 
@@ -925,6 +931,178 @@ func (g *Generator) genDbCall(method string, args []string, named map[string]par
 		if len(args) > 1 {
 			return fmt.Sprintf("cDbSort(toString(%s), %s, \"asc\")", args[0], args[1])
 		}
+	case "migrate":
+		return fmt.Sprintf("cDbMigrate(%s)", args[0])
+	case "migration_status":
+		return "cDbMigrationStatus()"
+	case "using":
+		return fmt.Sprintf("cDbUsing(toString(%s))", args[0])
+	case "last_insert_id":
+		return "cDbLastInsertId()"
+	}
+	return "nil"
+}
+
+func (g *Generator) genRedisCall(method string, args []string, named map[string]parser.Expression) string {
+	// Build named args map if present
+	namedArg := ""
+	if named != nil && len(named) > 0 {
+		namedParts := []string{}
+		for k, v := range named {
+			namedParts = append(namedParts, fmt.Sprintf("%q, %s", k, g.genExpr(v)))
+		}
+		namedArg = fmt.Sprintf("cMap(%s)", strings.Join(namedParts, ", "))
+	}
+
+	switch method {
+	case "connect":
+		if namedArg != "" {
+			return fmt.Sprintf("cRedisConnect(toString(%s), %s)", args[0], namedArg)
+		}
+		if len(args) > 1 {
+			return fmt.Sprintf("cRedisConnect(toString(%s), %s)", args[0], args[1])
+		}
+		return fmt.Sprintf("cRedisConnect(toString(%s), nil)", args[0])
+	case "disconnect":
+		return "cRedisDisconnect()"
+	case "set":
+		if namedArg != "" {
+			return fmt.Sprintf("cRedisSet(toString(%s), toString(%s), %s)", args[0], args[1], namedArg)
+		}
+		if len(args) > 2 {
+			return fmt.Sprintf("cRedisSet(toString(%s), toString(%s), %s)", args[0], args[1], args[2])
+		}
+		return fmt.Sprintf("cRedisSet(toString(%s), toString(%s), nil)", args[0], args[1])
+	case "get":
+		if len(args) > 1 {
+			return fmt.Sprintf("cRedisGet(toString(%s), %s)", args[0], args[1])
+		}
+		return fmt.Sprintf("cRedisGet(toString(%s), nil)", args[0])
+	case "delete":
+		return fmt.Sprintf("cRedisDelete(%s)", args[0])
+	case "exists":
+		return fmt.Sprintf("cRedisExists(toString(%s))", args[0])
+	case "expire":
+		return fmt.Sprintf("cRedisExpire(toString(%s), toString(%s))", args[0], args[1])
+	case "ttl":
+		return fmt.Sprintf("cRedisTTL(toString(%s))", args[0])
+	case "incr":
+		return fmt.Sprintf("cRedisIncr(toString(%s))", args[0])
+	case "incr_by":
+		return fmt.Sprintf("cRedisIncrBy(toString(%s), %s)", args[0], args[1])
+	case "decr":
+		return fmt.Sprintf("cRedisDecr(toString(%s))", args[0])
+	case "cache":
+		if namedArg != "" {
+			return fmt.Sprintf("cRedisCache(toString(%s), %s, %s)", args[0], args[1], namedArg)
+		}
+		return fmt.Sprintf("cRedisCache(toString(%s), %s, nil)", args[0], args[1])
+	case "invalidate":
+		return fmt.Sprintf("cRedisInvalidate(toString(%s))", args[0])
+	case "invalidate_pattern":
+		return fmt.Sprintf("cRedisInvalidatePattern(toString(%s))", args[0])
+	case "lock":
+		if namedArg != "" {
+			return fmt.Sprintf("cRedisLock(toString(%s), %s)", args[0], namedArg)
+		}
+		if len(args) > 1 {
+			return fmt.Sprintf("cRedisLock(toString(%s), %s)", args[0], args[1])
+		}
+		return fmt.Sprintf("cRedisLock(toString(%s), nil)", args[0])
+	case "publish":
+		return fmt.Sprintf("cRedisPublish(toString(%s), toString(%s))", args[0], args[1])
+	case "subscribe":
+		return fmt.Sprintf("cRedisSubscribe(toString(%s), %s)", args[0], args[1])
+	case "zadd":
+		return fmt.Sprintf("cRedisZadd(toString(%s), %s)", args[0], args[1])
+	case "zrange":
+		return fmt.Sprintf("cRedisZrange(toString(%s), %s, %s)", args[0], args[1], args[2])
+	case "zrevrange":
+		return fmt.Sprintf("cRedisZrevrange(toString(%s), %s, %s)", args[0], args[1], args[2])
+	case "zrank":
+		return fmt.Sprintf("cRedisZrank(toString(%s), toString(%s))", args[0], args[1])
+	case "zrevrank":
+		return fmt.Sprintf("cRedisZrevrank(toString(%s), toString(%s))", args[0], args[1])
+	case "zscore":
+		return fmt.Sprintf("cRedisZscore(toString(%s), toString(%s))", args[0], args[1])
+	case "zincrby":
+		return fmt.Sprintf("cRedisZincrby(toString(%s), toString(%s), %s)", args[0], args[1], args[2])
+	case "rate_limiter":
+		return fmt.Sprintf("cRedisRateLimiter(%s)", args[0])
+	}
+	return "nil"
+}
+
+func (g *Generator) genImageCall(method string, args []string, named map[string]parser.Expression) string {
+	switch method {
+	case "open":
+		return fmt.Sprintf("cImageOpen(toString(%s))", args[0])
+	case "from_bytes":
+		return fmt.Sprintf("cImageFromBytes(toString(%s))", args[0])
+	case "info":
+		return fmt.Sprintf("cImageInfo(toString(%s))", args[0])
+	case "read_exif":
+		return fmt.Sprintf("cImageReadExif(toString(%s))", args[0])
+	}
+	return "nil"
+}
+
+func (g *Generator) genOAuthCall(method string, args []string, named map[string]parser.Expression) string {
+	namedArg := ""
+	if named != nil && len(named) > 0 {
+		namedParts := []string{}
+		for k, v := range named {
+			namedParts = append(namedParts, fmt.Sprintf("%q, %s", k, g.genExpr(v)))
+		}
+		namedArg = fmt.Sprintf("cMap(%s)", strings.Join(namedParts, ", "))
+	}
+
+	switch method {
+	case "provider":
+		return fmt.Sprintf("cOAuthProvider(toString(%s), %s)", args[0], args[1])
+	case "configure_jwt":
+		return fmt.Sprintf("cOAuthConfigureJWT(%s)", args[0])
+	case "authorization_url":
+		if namedArg != "" {
+			return fmt.Sprintf("cOAuthAuthorizationURL(toString(%s), %s)", args[0], namedArg)
+		}
+		return fmt.Sprintf("cOAuthAuthorizationURL(toString(%s), nil)", args[0])
+	case "exchange_code":
+		if namedArg != "" {
+			return fmt.Sprintf("cOAuthExchangeCode(toString(%s), toString(%s), %s)", args[0], args[1], namedArg)
+		}
+		return fmt.Sprintf("cOAuthExchangeCode(toString(%s), toString(%s), nil)", args[0], args[1])
+	case "get_profile":
+		return fmt.Sprintf("cOAuthGetProfile(toString(%s), toString(%s))", args[0], args[1])
+	case "sign_jwt":
+		if namedArg != "" {
+			return fmt.Sprintf("cOAuthSignJWT(%s, %s)", args[0], namedArg)
+		}
+		return fmt.Sprintf("cOAuthSignJWT(%s, nil)", args[0])
+	case "sign_refresh_token":
+		return fmt.Sprintf("cOAuthSignRefreshToken(%s)", args[0])
+	case "verify_jwt":
+		return fmt.Sprintf("cOAuthVerifyJWT(toString(%s))", args[0])
+	case "verify_refresh_token":
+		return fmt.Sprintf("cOAuthVerifyJWT(toString(%s))", args[0])
+	case "decode_jwt":
+		return fmt.Sprintf("cOAuthDecodeJWT(toString(%s))", args[0])
+	case "revoke_jwt":
+		return fmt.Sprintf("cOAuthRevokeJWT(toString(%s))", args[0])
+	case "is_revoked":
+		return fmt.Sprintf("cOAuthIsRevoked(toString(%s))", args[0])
+	case "generate_state":
+		return "cOAuthGenerateState()"
+	case "generate_pkce":
+		return "cOAuthGeneratePKCE()"
+	case "hash_token":
+		return fmt.Sprintf("cOAuthHashToken(toString(%s))", args[0])
+	case "define_roles":
+		return fmt.Sprintf("cOAuthDefineRoles(%s)", args[0])
+	case "has_permission":
+		return fmt.Sprintf("cOAuthHasPermission(%s, toString(%s))", args[0], args[1])
+	case "check_permission":
+		return fmt.Sprintf("cOAuthHasPermission(%s, toString(%s))", args[0], args[1])
 	}
 	return "nil"
 }
