@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 420" font-family="Inter, -apple-system, sans-serif">
+  <rect width="1100" height="420" fill="#fff" rx="0"/>
+  <text x="550" y="30" text-anchor="middle" font-size="14" font-weight="700" fill="#1a1a2e">Codong Arena — Blog Posts API Benchmark (Claude Sonnet 4)</text>
+  <text x="550" y="48" text-anchor="middle" font-size="11" fill="#8b939e">Posts CRUD with tags, search, pagination — relational data</text>
+
+  <!-- Headers -->
+  <g font-size="13" font-weight="700" fill="#1a1a2e">
+    <text x="100" y="80" text-anchor="middle">Codong</text>
+    <text x="300" y="80" text-anchor="middle">Python</text>
+    <text x="500" y="80" text-anchor="middle">JavaScript</text>
+    <text x="700" y="80" text-anchor="middle">Java</text>
+    <text x="900" y="80" text-anchor="middle">Go</text>
+  </g>
+  <g font-size="10" fill="#8b939e">
+    <text x="100" y="95" text-anchor="middle">AI-Native</text>
+    <text x="300" y="95" text-anchor="middle">TOP #1</text>
+    <text x="500" y="95" text-anchor="middle">TOP #2</text>
+    <text x="700" y="95" text-anchor="middle">TOP #3</text>
+    <text x="900" y="95" text-anchor="middle">TOP #5</text>
+  </g>
+
+  <line x1="20" y1="105" x2="1080" y2="105" stroke="#e2e5e9" stroke-width="1"/>
+
+  <!-- Row labels -->
+  <g font-size="12" fill="#5a6270">
+    <text x="20" y="135">Total Tokens</text>
+    <text x="20" y="170">Gen Time</text>
+    <text x="20" y="205">Code Lines</text>
+    <text x="20" y="240">Est. Cost</text>
+    <text x="20" y="280" fill="#8b939e" font-size="11">Output</text>
+  </g>
+
+  <!-- Codong values (BEST) -->
+  <g font-size="15" font-weight="700" fill="#2c3e8f" font-family="JetBrains Mono, monospace" text-anchor="end">
+    <text x="170" y="135">955</text>
+    <text x="170" y="170">8,580<tspan font-size="10" fill="#8b939e">ms</tspan></text>
+    <text x="170" y="205">10</text>
+    <text x="170" y="240">$0.012</text>
+    <text x="170" y="280" font-size="12" font-weight="400" fill="#5a6270">722</text>
+  </g>
+
+  <!-- Python -->
+  <g font-size="15" font-weight="600" fill="#1a1a2e" font-family="JetBrains Mono, monospace" text-anchor="end">
+    <text x="370" y="135">1,867</text>
+    <text x="370" y="170">15,273<tspan font-size="10" fill="#8b939e">ms</tspan></text>
+    <text x="370" y="205">143</text>
+    <text x="370" y="240">$0.025</text>
+    <text x="370" y="280" font-size="12" font-weight="400" fill="#5a6270">1,597</text>
+  </g>
+
+  <!-- JavaScript -->
+  <g font-size="15" font-weight="600" fill="#1a1a2e" font-family="JetBrains Mono, monospace" text-anchor="end">
+    <text x="570" y="135">1,710</text>
+    <text x="570" y="170">13,737<tspan font-size="10" fill="#8b939e">ms</tspan></text>
+    <text x="570" y="205">147</text>
+    <text x="570" y="240">$0.022</text>
+    <text x="570" y="280" font-size="12" font-weight="400" fill="#5a6270">1,439</text>
+  </g>
+
+  <!-- Java -->
+  <g font-size="15" font-weight="600" fill="#1a1a2e" font-family="JetBrains Mono, monospace" text-anchor="end">
+    <text x="770" y="135">4,367</text>
+    <text x="770" y="170">37,398<tspan font-size="10" fill="#8b939e">ms</tspan></text>
+    <text x="770" y="205">337</text>
+    <text x="770" y="240">$0.062</text>
+    <text x="770" y="280" font-size="12" font-weight="400" fill="#5a6270">4,096</text>
+  </g>
+
+  <!-- Go -->
+  <g font-size="15" font-weight="600" fill="#1a1a2e" font-family="JetBrains Mono, monospace" text-anchor="end">
+    <text x="970" y="135">3,270</text>
+    <text x="970" y="170">26,585<tspan font-size="10" fill="#8b939e">ms</tspan></text>
+    <text x="970" y="205">289</text>
+    <text x="970" y="240">$0.046</text>
+    <text x="970" y="280" font-size="12" font-weight="400" fill="#5a6270">3,001</text>
+  </g>
+
+  <line x1="20" y1="300" x2="1080" y2="300" stroke="#e2e5e9" stroke-width="1"/>
+
+  <!-- Bar chart -->
+  <text x="550" y="325" text-anchor="middle" font-size="12" font-weight="600" fill="#1a1a2e">Output Tokens — AI-Generated Code Volume (lower = more efficient)</text>
+
+  <!-- Bars -->
+  <rect x="100" y="340" width="70" height="18" fill="#2c3e8f" opacity=".6" rx="1"/>
+  <text x="180" y="354" font-size="11" fill="#1a1a2e" font-family="JetBrains Mono, monospace">722</text>
+  <text x="90" y="354" text-anchor="end" font-size="11" fill="#2c3e8f" font-weight="600">Codong</text>
+
+  <rect x="100" y="362" width="155" height="18" fill="#4a6fa5" opacity=".5" rx="1"/>
+  <text x="265" y="376" font-size="11" fill="#1a1a2e" font-family="JetBrains Mono, monospace">1,439</text>
+  <text x="90" y="376" text-anchor="end" font-size="11" fill="#5a6270">JS</text>
+
+  <rect x="100" y="384" width="170" height="18" fill="#4a6fa5" opacity=".5" rx="1"/>
+  <text x="280" y="398" font-size="11" fill="#1a1a2e" font-family="JetBrains Mono, monospace">1,597</text>
+  <text x="90" y="398" text-anchor="end" font-size="11" fill="#5a6270">Python</text>
+
+  <text x="550" y="418" text-anchor="middle" font-size="10" fill="#8b939e">Run it yourself: codong.org/arena</text>
+</svg>

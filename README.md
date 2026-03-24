@@ -35,41 +35,20 @@ less code, fewer tokens, and finishes faster. These numbers come from
 [Codong Arena](https://codong.org/arena/), where any model writes the same spec in every language
 and the results are measured automatically.
 
-```
-Output Tokens (lower is better)
-----------------------------------------------------------------
-Codong  |========                                    |   677
-Python  |=============                               | 1,021
-JS      |============                                |   992
-Go      |========================                    | 1,929
-Java    |=================================           | 2,653
-----------------------------------------------------------------
+<p align="center">
+  <img src="docs/images/arena-benchmark.svg" alt="Codong Arena Benchmark — Posts CRUD with tags, search, pagination" width="100%" />
+  <br />
+  <sub>Live benchmark: Claude Sonnet 4 generating a Posts CRUD API with tags, search, and pagination. <a href="https://codong.org/arena/">Run it yourself</a></sub>
+</p>
 
-Lines of Code (lower is better)
-----------------------------------------------------------------
-Codong  |=======                                     |    65
-JS      |===========                                 |    89
-Python  |===============                             |   121
-Go      |========================                    |   193
-Java    |============================                |   225
-----------------------------------------------------------------
-
-Generation Time (lower is better)
-----------------------------------------------------------------
-Codong  |=========                                   |  7.9s
-JS      |============                                | 10.4s
-Python  |================                            | 13.6s
-Go      |========================                    | 20.0s
-Java    |===============================             | 26.0s
-----------------------------------------------------------------
-```
-
-| Metric | Codong | Python | JavaScript | Go | Java |
-|--------|--------|--------|------------|-----|------|
-| Output Tokens | **677** | 1,021 | 992 | 1,929 | 2,653 |
-| Lines of Code | **65** | 121 | 89 | 193 | 225 |
-| Generation Time | **7.9s** | 13.6s | 10.4s | 20.0s | 26.0s |
-| Token Reduction | -- | 34% | 32% | 65% | 74% |
+| Metric | Codong | Python | JavaScript | Java | Go |
+|--------|--------|--------|------------|------|-----|
+| Total Tokens | **955** | 1,867 | 1,710 | 4,367 | 3,270 |
+| Generation Time | **8.6s** | 15.3s | 13.7s | 37.4s | 26.6s |
+| Code Lines | **10** | 143 | 147 | 337 | 289 |
+| Est. Cost | **$0.012** | $0.025 | $0.022 | $0.062 | $0.046 |
+| Output Tokens | **722** | 1,597 | 1,439 | 4,096 | 3,001 |
+| vs Codong | -- | +121% | +99% | +467% | +316% |
 
 Run your own benchmark: [codong.org/arena](https://codong.org/arena/)
 
