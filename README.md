@@ -1,5 +1,7 @@
 <p align="center">
-  <strong>CODONG</strong><br>
+  <img src="docs/images/codong-logo.jpg" alt="Codong" width="25%" />
+</p>
+<p align="center">
   The world's first AI-native programming language
 </p>
 
@@ -7,7 +9,6 @@
   <a href="https://codong.org">Website</a> |
   <a href="https://codong.org/arena/">Arena</a> |
   <a href="./SPEC.md">Spec</a> |
-  <a href="./WHITEPAPER.md">Whitepaper</a> |
   <a href="./SPEC_FOR_AI.md">AI Spec</a>
 </p>
 
