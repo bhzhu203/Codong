@@ -2,7 +2,7 @@
   <img src="docs/images/logo.jpg" alt="Codong" width="25%" />
 </p>
 <p align="center">
-  The world's first AI-native programming language
+  The world's first AI native programming language
 </p>
 
 <p align="center">
