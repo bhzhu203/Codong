@@ -29,6 +29,31 @@
 
 ---
 
+## Installation
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brettinhere/Codong/main/install.sh | sh
+```
+
+Or download a binary directly from [GitHub Releases](https://github.com/brettinhere/Codong/releases/latest):
+
+| Platform | Binary |
+|----------|--------|
+| Linux x86_64 | [codong-linux-amd64](https://github.com/brettinhere/Codong/releases/latest/download/codong-linux-amd64) |
+| Linux ARM64 | [codong-linux-arm64](https://github.com/brettinhere/Codong/releases/latest/download/codong-linux-arm64) |
+| macOS Intel | [codong-darwin-amd64](https://github.com/brettinhere/Codong/releases/latest/download/codong-darwin-amd64) |
+| macOS Apple Silicon | [codong-darwin-arm64](https://github.com/brettinhere/Codong/releases/latest/download/codong-darwin-arm64) |
+
+**Requirements:** `codong eval` works standalone. `codong run` and `codong build` require Go 1.22+.
+
+Verify your installation:
+
+```bash
+codong version
+```
+
+---
+
 ## Arena Benchmark: Codong vs. Established Languages
 
 When an AI model writes the same application in different languages, Codong produces dramatically
@@ -58,8 +83,8 @@ Run your own benchmark: [codong.org/arena](https://codong.org/arena/)
 ## Quick Start in 30 Seconds
 
 ```bash
-# 1. Download the binary
-curl -fsSL https://codong.org/install.sh | sh
+# 1. Install
+curl -fsSL https://raw.githubusercontent.com/brettinhere/Codong/main/install.sh | sh
 
 # 2. Write your first program
 echo 'print("Hello, Codong!")' > hello.cod
