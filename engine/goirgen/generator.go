@@ -923,6 +923,9 @@ func (g *Generator) genDbCall(method string, args []string, named map[string]par
 		}
 		return fmt.Sprintf("cDbQueryOne(toString(%s))", args[0])
 	case "transaction":
+		if len(args) > 1 {
+			return fmt.Sprintf("cDbTransaction(%s, %s)", args[0], args[1])
+		}
 		return fmt.Sprintf("cDbTransaction(%s)", args[0])
 	case "sort":
 		if len(args) > 2 {
@@ -1038,6 +1041,9 @@ func (g *Generator) genImageCall(method string, args []string, named map[string]
 	case "open":
 		return fmt.Sprintf("cImageOpen(toString(%s))", args[0])
 	case "from_bytes":
+		if len(args) > 1 {
+			return fmt.Sprintf("cImageFromBytes(toString(%s), toString(%s))", args[0], args[1])
+		}
 		return fmt.Sprintf("cImageFromBytes(toString(%s))", args[0])
 	case "info":
 		return fmt.Sprintf("cImageInfo(toString(%s))", args[0])

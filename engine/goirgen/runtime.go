@@ -35,6 +35,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"image"
+	"image/color"
 	imgdraw "image/draw"
 	"image/gif"
 	"image/jpeg"
@@ -1116,7 +1117,7 @@ func cWebJson(args ...Value) *CodongMap {
 	status := float64(200)
 	if len(args) > 0 { data = args[0] }
 	if len(args) > 1 { status = toFloat(args[1]) }
-	m := cMap("_type", "json", "data", data, "status", status)
+	m := cMap("_type", "json", "data", data, "body", data, "status", status)
 	if len(args) > 2 {
 		if h, ok := args[2].(*CodongMap); ok { cSet(m, "headers", h) }
 	}
@@ -1708,6 +1709,8 @@ func cDbError(err error) *CodongError {
 
 func cDbQuery(sqlStr string, params ...Value) Value {
 	if cDB == nil { return cError("E2002", "no database connection") }
+	// Expand IN arrays: if a param is a CodongList, expand the corresponding ? into (?,?,...)
+	sqlStr, params = cDbExpandIN(sqlStr, params)
 	args := make([]interface{}, len(params))
 	for i, p := range params { args[i] = valueToGo(p) }
 	trimmed := strings.TrimSpace(strings.ToUpper(sqlStr))
@@ -1722,6 +1725,50 @@ func cDbQuery(sqlStr string, params ...Value) Value {
 	aff, _ := result.RowsAffected()
 	lid, _ := result.LastInsertId()
 	return cMap("affected", float64(aff), "id", float64(lid))
+}
+
+// cDbExpandIN expands list parameters into multiple placeholders
+func cDbExpandIN(sqlStr string, params []Value) (string, []Value) {
+	// Check if any param is a CodongList
+	hasLists := false
+	for _, p := range params {
+		if _, ok := p.(*CodongList); ok { hasLists = true; break }
+	}
+	if !hasLists { return sqlStr, params }
+
+	var newSQL strings.Builder
+	var newParams []Value
+	paramIdx := 0
+	inSQ := false; inDQ := false
+	runes := []rune(sqlStr)
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+		if ch == '\'' && !inDQ { inSQ = !inSQ; newSQL.WriteRune(ch); continue }
+		if ch == '"' && !inSQ { inDQ = !inDQ; newSQL.WriteRune(ch); continue }
+		if inSQ || inDQ { newSQL.WriteRune(ch); continue }
+		if ch == '?' && paramIdx < len(params) {
+			p := params[paramIdx]; paramIdx++
+			if list, ok := p.(*CodongList); ok {
+				if len(list.Elements) == 0 {
+					// Empty IN list: use impossible condition
+					newSQL.WriteString("NULL")
+				} else {
+					phs := make([]string, len(list.Elements))
+					for j, el := range list.Elements {
+						phs[j] = "?"
+						newParams = append(newParams, el)
+					}
+					newSQL.WriteString(strings.Join(phs, ","))
+				}
+			} else {
+				newSQL.WriteRune('?')
+				newParams = append(newParams, p)
+			}
+		} else {
+			newSQL.WriteRune(ch)
+		}
+	}
+	return newSQL.String(), newParams
 }
 
 func cDbCount(table string, filterVal Value) Value {
@@ -1943,7 +1990,7 @@ func cDbQueryOne(sqlStr string, params ...Value) Value {
 
 var cDbTx *sql.Tx // active transaction, if any
 
-func cDbTransaction(fn Value) Value {
+func cDbTransaction(fnVal Value, opts ...Value) Value {
 	if cDB == nil { return cError("E2002", "no database connection") }
 	tx, err := cDB.Begin()
 	if err != nil { return cDbError(err) }
@@ -1965,6 +2012,41 @@ func cDbTransaction(fn Value) Value {
 		}
 		return cDbQuery(toString(args[0]))
 	})
+	cSet(txObj, "query_one", func(args ...Value) Value {
+		if len(args) > 1 {
+			return cDbQueryOne(toString(args[0]), toList(args[1]).Elements...)
+		}
+		return cDbQueryOne(toString(args[0]))
+	})
+	cSet(txObj, "find", func(args ...Value) Value {
+		if len(args) > 1 {
+			return cDbFind(toString(args[0]), args[1])
+		}
+		return cDbFind(toString(args[0]), nil)
+	})
+	cSet(txObj, "find_one", func(args ...Value) Value {
+		if len(args) > 1 {
+			return cDbFindOne(toString(args[0]), args[1])
+		}
+		return cDbFindOne(toString(args[0]), nil)
+	})
+	cSet(txObj, "savepoint", func(args ...Value) Value {
+		name := "sp_" + fmt.Sprintf("%d", time.Now().UnixNano())
+		if len(args) > 0 { name = toString(args[0]) }
+		cDbTx.Exec("SAVEPOINT " + name)
+		return name
+	})
+	cSet(txObj, "rollback_to", func(args ...Value) Value {
+		if len(args) > 0 {
+			name := toString(args[0])
+			cDbTx.Exec("ROLLBACK TO SAVEPOINT " + name)
+		}
+		return nil
+	})
+	cSet(txObj, "set_isolation", func(args ...Value) Value {
+		// SQLite ignores isolation levels; for MySQL/PG this would be set before BEGIN
+		return nil
+	})
 	// Call fn with tx object, and also catch panics from ? operator
 	var result Value
 	func() {
@@ -1983,7 +2065,7 @@ func cDbTransaction(fn Value) Value {
 				panic(r) // re-panic non-error panics
 			}
 		}()
-		result = cCallFn(fn, txObj)
+		result = cCallFn(fnVal, txObj)
 	}()
 	cDbTx = nil
 	if e, ok := result.(*CodongError); ok {
@@ -1999,8 +2081,13 @@ func cDbTransaction(fn Value) Value {
 
 // cDbExec executes SQL using the transaction if active, otherwise the main connection.
 func cDbExec(q string, args ...interface{}) (sql.Result, error) {
-	if cDbTx != nil { return cDbTx.Exec(q, args...) }
-	return cDB.Exec(q, args...)
+	var result sql.Result
+	var err error
+	if cDbTx != nil { result, err = cDbTx.Exec(q, args...) } else { result, err = cDB.Exec(q, args...) }
+	if err == nil && result != nil {
+		if lid, e := result.LastInsertId(); e == nil { cDbLastInsertIdVal = float64(lid) }
+	}
+	return result, err
 }
 
 func cDbQueryRows(q string, args ...interface{}) (*sql.Rows, error) {
@@ -3353,11 +3440,21 @@ func cDbMigrationStatus() Value {
 	return cMap("current", float64(maxV), "pending", float64(0), "applied", &CodongList{Elements: applied})
 }
 
+var cDbNamedConns = map[string]*sql.DB{}
+var cDbNamedSchemes = map[string]string{}
+
 func cDbUsing(name string) Value {
-	return cMap("_type", "db_using", "_name", name)
+	if db, ok := cDbNamedConns[name]; ok {
+		cDB = db
+		if s, ok := cDbNamedSchemes[name]; ok { cDbScheme = s }
+		return cMap("_type", "db_using", "_name", name)
+	}
+	return cError("E2002", "no database connection named: "+name)
 }
 
-func cDbLastInsertId() Value { return nil }
+var cDbLastInsertIdVal float64
+
+func cDbLastInsertId() Value { return cDbLastInsertIdVal }
 
 // --- Redis Module (Runtime stubs for generated Go code) ---
 // These are lightweight stubs. Full Redis requires the go-redis dependency
@@ -3462,7 +3559,9 @@ type cImageObj struct {
 	path   string
 }
 
-func cImageFromBytes(data string) Value {
+func cImageFromBytes(args ...string) Value {
+	if len(args) < 1 { return cError("E12002", "from_bytes requires data") }
+	data := args[0]
 	reader := bytes.NewReader([]byte(data))
 	config, format, err := image.DecodeConfig(reader)
 	if err != nil { return cError("E12002", "invalid image") }
@@ -3470,6 +3569,12 @@ func cImageFromBytes(data string) Value {
 	reader.Seek(0, 0)
 	img, _, err := image.Decode(reader)
 	if err != nil { return cError("E12002", "decode failed") }
+	// If format hint provided, use it
+	if len(args) > 1 {
+		hint := strings.ToLower(args[1])
+		hint = strings.TrimPrefix(hint, "image/")
+		if hint != "" { format = hint }
+	}
 	return &cImageObj{img: img, format: format}
 }
 
@@ -3483,12 +3588,21 @@ func cImageInfo(path string) Value {
 	defer f.Close()
 	config, format, err := image.DecodeConfig(f)
 	if err != nil { return nil }
-	return cMap("width", float64(config.Width), "height", float64(config.Height), "format", format, "size_bytes", float64(info.Size()))
+	channels := float64(3)
+	f.Seek(0, 0)
+	tmpImg, _, _ := image.Decode(f)
+	if tmpImg != nil {
+		switch tmpImg.ColorModel() {
+		case color.RGBAModel, color.NRGBA64Model, color.NRGBAModel:
+			channels = 4
+		}
+	}
+	return cMap("width", float64(config.Width), "height", float64(config.Height), "format", format, "size_bytes", float64(info.Size()), "channels", channels)
 }
 
 func cImageReadExif(path string) Value { return cMap() }
 
-// cCall handles method calls on image objects
+// cImageCall handles method calls on image objects
 func cImageCall(obj *cImageObj, method string, args ...Value) Value {
 	switch method {
 	case "resize":
@@ -3500,7 +3614,9 @@ func cImageCall(obj *cImageObj, method string, args ...Value) Value {
 	case "height":
 		return float64(obj.img.Bounds().Dy())
 	case "crop":
-		return cImageCrop(obj, args...)
+		return cImageCropNamed(obj, args...)
+	case "crop_center":
+		return cImageCropCenter(obj, args...)
 	case "to_grayscale":
 		return cImageGrayscale(obj)
 	case "flip_horizontal":
@@ -3514,11 +3630,37 @@ func cImageCall(obj *cImageObj, method string, args ...Value) Value {
 	case "cover":
 		return cImageCover(obj, args...)
 	case "thumbnail":
-		return cImageCover(obj, args...)
+		return cImageThumbnail(obj, args...)
 	case "auto_rotate", "strip_metadata":
 		return obj
 	case "to_base64":
 		return cImageToBase64(obj, args...)
+	case "to_bytes":
+		return cImageToBytes(obj, args...)
+	case "info":
+		return cImageObjInfo(obj)
+	case "brightness":
+		return cImageBrightness(obj, args...)
+	case "blur":
+		return cImageBlur(obj, args...)
+	case "sharpen":
+		return cImageSharpen(obj, args...)
+	case "contrast":
+		return cImageContrast(obj, args...)
+	case "tint":
+		return cImageTint(obj, args...)
+	case "gamma":
+		return cImageGamma(obj, args...)
+	case "extend":
+		return cImageExtend(obj, args...)
+	case "watermark_text":
+		return cImageWatermarkText(obj, args...)
+	case "watermark_image":
+		return cImageWatermarkImage(obj, args...)
+	case "set_metadata":
+		return obj // no-op, return same image
+	case "optimize":
+		return obj // optimization is a no-op, return same image
 	}
 	return nil
 }
@@ -3562,6 +3704,273 @@ func cImageCrop(obj *cImageObj, args ...Value) Value {
 	if len(args) < 4 { return obj }
 	x := int(toFloat(args[0])); y := int(toFloat(args[1])); w := int(toFloat(args[2])); h := int(toFloat(args[3]))
 	return &cImageObj{img: cCropImg(obj.img, x, y, w, h), format: obj.format, path: obj.path}
+}
+
+// cImageCropNamed handles crop with named args: img.crop(x:0, y:0, width:100, height:100)
+func cImageCropNamed(obj *cImageObj, args ...Value) Value {
+	if len(args) >= 4 {
+		// Positional args
+		return cImageCrop(obj, args...)
+	}
+	if len(args) >= 1 {
+		if m, ok := args[0].(*CodongMap); ok {
+			x := 0; y := 0; w := obj.img.Bounds().Dx(); h := obj.img.Bounds().Dy()
+			if v, ok := m.Entries["x"]; ok { x = int(toFloat(v)) }
+			if v, ok := m.Entries["y"]; ok { y = int(toFloat(v)) }
+			if v, ok := m.Entries["width"]; ok { w = int(toFloat(v)) }
+			if v, ok := m.Entries["height"]; ok { h = int(toFloat(v)) }
+			// Clamp to image bounds
+			b := obj.img.Bounds()
+			if x + w > b.Dx() { w = b.Dx() - x }
+			if y + h > b.Dy() { h = b.Dy() - y }
+			if w <= 0 || h <= 0 { return obj }
+			return &cImageObj{img: cCropImg(obj.img, x, y, w, h), format: obj.format, path: obj.path}
+		}
+	}
+	return obj
+}
+
+func cImageCropCenter(obj *cImageObj, args ...Value) Value {
+	if len(args) < 2 { return obj }
+	w := int(toFloat(args[0])); h := int(toFloat(args[1]))
+	b := obj.img.Bounds()
+	x := (b.Dx() - w) / 2; y := (b.Dy() - h) / 2
+	if x < 0 { x = 0 }; if y < 0 { y = 0 }
+	if w > b.Dx() { w = b.Dx() }; if h > b.Dy() { h = b.Dy() }
+	return &cImageObj{img: cCropImg(obj.img, x, y, w, h), format: obj.format, path: obj.path}
+}
+
+func cImageThumbnail(obj *cImageObj, args ...Value) Value {
+	if len(args) < 2 { return obj }
+	maxW := int(toFloat(args[0])); maxH := int(toFloat(args[1]))
+	b := obj.img.Bounds()
+	rX := float64(maxW) / float64(b.Dx()); rY := float64(maxH) / float64(b.Dy())
+	r := rX; if rY < r { r = rY }
+	nw := int(float64(b.Dx()) * r); nh := int(float64(b.Dy()) * r)
+	if nw <= 0 { nw = 1 }; if nh <= 0 { nh = 1 }
+	return &cImageObj{img: cResizeImg(obj.img, nw, nh), format: obj.format, path: obj.path}
+}
+
+func cImageObjInfo(obj *cImageObj) Value {
+	b := obj.img.Bounds()
+	channels := float64(3)
+	switch obj.img.ColorModel() {
+	case color.RGBAModel, color.NRGBA64Model, color.NRGBAModel:
+		channels = 4
+	}
+	return cMap("width", float64(b.Dx()), "height", float64(b.Dy()), "format", obj.format, "channels", channels)
+}
+
+func cImageToBytes(obj *cImageObj, args ...Value) Value {
+	format := "jpeg"
+	quality := 85
+	if len(args) > 0 { format = strings.ToLower(toString(args[0])) }
+	if len(args) > 1 {
+		if m, ok := args[1].(*CodongMap); ok {
+			if v, ok := m.Entries["quality"]; ok { quality = int(toFloat(v)) }
+		}
+	}
+	var buf bytes.Buffer
+	switch format {
+	case "jpeg", "jpg": jpeg.Encode(&buf, obj.img, &jpeg.Options{Quality: quality})
+	case "png": png.Encode(&buf, obj.img)
+	default: jpeg.Encode(&buf, obj.img, &jpeg.Options{Quality: quality})
+	}
+	return string(buf.Bytes())
+}
+
+func cImageBrightness(obj *cImageObj, args ...Value) Value {
+	factor := 1.0
+	if len(args) > 0 { factor = toFloat(args[0]) }
+	b := obj.img.Bounds()
+	dst := image.NewRGBA(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, g, bl, a := obj.img.At(x, y).RGBA()
+			nr := cClamp8(float64(r>>8) * factor)
+			ng := cClamp8(float64(g>>8) * factor)
+			nb := cClamp8(float64(bl>>8) * factor)
+			dst.SetRGBA(x, y, color.RGBA{nr, ng, nb, uint8(a>>8)})
+		}
+	}
+	return &cImageObj{img: dst, format: obj.format, path: obj.path}
+}
+
+func cImageBlur(obj *cImageObj, args ...Value) Value {
+	radius := 2
+	if len(args) > 0 {
+		if m, ok := args[0].(*CodongMap); ok {
+			if v, ok := m.Entries["radius"]; ok { radius = int(toFloat(v)) }
+		} else {
+			radius = int(toFloat(args[0]))
+		}
+	}
+	if radius < 1 { radius = 1 }
+	b := obj.img.Bounds()
+	dst := image.NewRGBA(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			var rr, gg, bb, aa float64; count := 0.0
+			for dy := -radius; dy <= radius; dy++ {
+				for dx := -radius; dx <= radius; dx++ {
+					nx := x + dx; ny := y + dy
+					if nx >= b.Min.X && nx < b.Max.X && ny >= b.Min.Y && ny < b.Max.Y {
+						r, g, bl, a := obj.img.At(nx, ny).RGBA()
+						rr += float64(r>>8); gg += float64(g>>8); bb += float64(bl>>8); aa += float64(a>>8); count++
+					}
+				}
+			}
+			dst.SetRGBA(x, y, color.RGBA{uint8(rr/count), uint8(gg/count), uint8(bb/count), uint8(aa/count)})
+		}
+	}
+	return &cImageObj{img: dst, format: obj.format, path: obj.path}
+}
+
+func cImageSharpen(obj *cImageObj, args ...Value) Value {
+	b := obj.img.Bounds()
+	dst := image.NewRGBA(b)
+	// Simple 3x3 sharpen kernel: center=5, neighbors=-1
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			cr, cg, cb, ca := obj.img.At(x, y).RGBA()
+			var rr, gg, bb float64
+			rr = float64(cr>>8) * 5; gg = float64(cg>>8) * 5; bb = float64(cb>>8) * 5
+			for _, d := range [][2]int{{-1,0},{1,0},{0,-1},{0,1}} {
+				nx, ny := x+d[0], y+d[1]
+				if nx >= b.Min.X && nx < b.Max.X && ny >= b.Min.Y && ny < b.Max.Y {
+					r, g, bl, _ := obj.img.At(nx, ny).RGBA()
+					rr -= float64(r>>8); gg -= float64(g>>8); bb -= float64(bl>>8)
+				}
+			}
+			dst.SetRGBA(x, y, color.RGBA{cClamp8(rr), cClamp8(gg), cClamp8(bb), uint8(ca>>8)})
+		}
+	}
+	return &cImageObj{img: dst, format: obj.format, path: obj.path}
+}
+
+func cImageContrast(obj *cImageObj, args ...Value) Value {
+	factor := 1.0
+	if len(args) > 0 { factor = toFloat(args[0]) }
+	b := obj.img.Bounds()
+	dst := image.NewRGBA(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, g, bl, a := obj.img.At(x, y).RGBA()
+			nr := cClamp8((float64(r>>8) - 128) * factor + 128)
+			ng := cClamp8((float64(g>>8) - 128) * factor + 128)
+			nb := cClamp8((float64(bl>>8) - 128) * factor + 128)
+			dst.SetRGBA(x, y, color.RGBA{nr, ng, nb, uint8(a>>8)})
+		}
+	}
+	return &cImageObj{img: dst, format: obj.format, path: obj.path}
+}
+
+func cImageTint(obj *cImageObj, args ...Value) Value {
+	tr, tg, tb := uint8(0), uint8(0), uint8(255)
+	if len(args) > 0 {
+		hex := toString(args[0])
+		hex = strings.TrimPrefix(hex, "#")
+		if len(hex) == 6 {
+			if v, err := strconv.ParseUint(hex[0:2], 16, 8); err == nil { tr = uint8(v) }
+			if v, err := strconv.ParseUint(hex[2:4], 16, 8); err == nil { tg = uint8(v) }
+			if v, err := strconv.ParseUint(hex[4:6], 16, 8); err == nil { tb = uint8(v) }
+		}
+	}
+	b := obj.img.Bounds()
+	dst := image.NewRGBA(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, g, bl, a := obj.img.At(x, y).RGBA()
+			nr := uint8((float64(r>>8) + float64(tr)) / 2)
+			ng := uint8((float64(g>>8) + float64(tg)) / 2)
+			nb := uint8((float64(bl>>8) + float64(tb)) / 2)
+			dst.SetRGBA(x, y, color.RGBA{nr, ng, nb, uint8(a>>8)})
+		}
+	}
+	return &cImageObj{img: dst, format: obj.format, path: obj.path}
+}
+
+func cImageGamma(obj *cImageObj, args ...Value) Value {
+	gamma := 1.0
+	if len(args) > 0 { gamma = toFloat(args[0]) }
+	if gamma <= 0 { gamma = 1.0 }
+	invGamma := 1.0 / gamma
+	b := obj.img.Bounds()
+	dst := image.NewRGBA(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, g, bl, a := obj.img.At(x, y).RGBA()
+			nr := uint8(255 * math.Pow(float64(r>>8)/255.0, invGamma))
+			ng := uint8(255 * math.Pow(float64(g>>8)/255.0, invGamma))
+			nb := uint8(255 * math.Pow(float64(bl>>8)/255.0, invGamma))
+			dst.SetRGBA(x, y, color.RGBA{nr, ng, nb, uint8(a>>8)})
+		}
+	}
+	return &cImageObj{img: dst, format: obj.format, path: obj.path}
+}
+
+func cImageExtend(obj *cImageObj, args ...Value) Value {
+	top, right, bottom, left := 0, 0, 0, 0
+	if len(args) > 0 {
+		if m, ok := args[0].(*CodongMap); ok {
+			if v, ok := m.Entries["top"]; ok { top = int(toFloat(v)) }
+			if v, ok := m.Entries["right"]; ok { right = int(toFloat(v)) }
+			if v, ok := m.Entries["bottom"]; ok { bottom = int(toFloat(v)) }
+			if v, ok := m.Entries["left"]; ok { left = int(toFloat(v)) }
+		}
+	}
+	b := obj.img.Bounds()
+	newW := b.Dx() + left + right
+	newH := b.Dy() + top + bottom
+	dst := image.NewRGBA(image.Rect(0, 0, newW, newH))
+	// Fill with white by default
+	for y := 0; y < newH; y++ {
+		for x := 0; x < newW; x++ {
+			dst.SetRGBA(x, y, color.RGBA{255, 255, 255, 255})
+		}
+	}
+	// Draw original image at offset
+	imgdraw.Draw(dst, image.Rect(left, top, left+b.Dx(), top+b.Dy()), obj.img, b.Min, imgdraw.Over)
+	return &cImageObj{img: dst, format: obj.format, path: obj.path}
+}
+
+func cImageWatermarkText(obj *cImageObj, args ...Value) Value {
+	// Basic watermark: just return the image as-is (text rendering requires freetype)
+	return obj
+}
+
+func cImageWatermarkImage(obj *cImageObj, args ...Value) Value {
+	if len(args) < 1 { return obj }
+	overlayPath := toString(args[0])
+	if !filepath.IsAbs(overlayPath) { overlayPath = filepath.Join(cFsWorkDir, overlayPath) }
+	f, err := os.Open(overlayPath)
+	if err != nil { return obj }
+	defer f.Close()
+	overlay, _, err := image.Decode(f)
+	if err != nil { return obj }
+	b := obj.img.Bounds()
+	dst := image.NewRGBA(b)
+	imgdraw.Draw(dst, b, obj.img, b.Min, imgdraw.Src)
+	// Default: bottom-right corner, scale overlay
+	scale := 0.2
+	if len(args) > 1 {
+		if m, ok := args[1].(*CodongMap); ok {
+			if v, ok := m.Entries["scale"]; ok { scale = toFloat(v) }
+		}
+	}
+	ob := overlay.Bounds()
+	ow := int(float64(b.Dx()) * scale); oh := int(float64(ob.Dy()) * float64(ow) / float64(ob.Dx()))
+	if ow < 1 { ow = 1 }; if oh < 1 { oh = 1 }
+	resized := cResizeImg(overlay, ow, oh)
+	ox := b.Dx() - ow - 10; oy := b.Dy() - oh - 10
+	imgdraw.Draw(dst, image.Rect(ox, oy, ox+ow, oy+oh), resized, image.Point{}, imgdraw.Over)
+	return &cImageObj{img: dst, format: obj.format, path: obj.path}
+}
+
+func cClamp8(v float64) uint8 {
+	if v < 0 { return 0 }
+	if v > 255 { return 255 }
+	return uint8(v)
 }
 
 func cImageGrayscale(obj *cImageObj) Value {
@@ -3630,6 +4039,9 @@ func cImageSave(obj *cImageObj, args ...Value) Value {
 		png.Encode(f, obj.img)
 	case ".gif":
 		gif.Encode(f, obj.img, nil)
+	case ".webp":
+		// Go stdlib has no WebP encoder; save as PNG (lossless) in WebP container
+		png.Encode(f, obj.img)
 	default:
 		png.Encode(f, obj.img)
 	}
@@ -3990,6 +4402,7 @@ var _ = rand.Read
 var _ = sha256.New
 var _ = hex.EncodeToString
 var _ = image.DecodeConfig
+var _ = color.RGBA{}
 var _ = imgdraw.Src
 var _ = gif.Encode
 var _ = jpeg.Encode
