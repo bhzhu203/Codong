@@ -118,10 +118,11 @@ require modernc.org/sqlite v1.47.0
 		return fmt.Errorf("cannot write go.mod: %w", err)
 	}
 
-	// Run go mod tidy
+	// Run go mod tidy (suppress output — module download messages pollute test output)
 	tidy := exec.Command("go", "mod", "tidy")
 	tidy.Dir = dir
-	tidy.Stderr = os.Stderr
+	tidy.Stdout = nil
+	tidy.Stderr = nil
 	if err := tidy.Run(); err != nil {
 		return fmt.Errorf("go mod tidy failed: %w", err)
 	}
@@ -164,8 +165,16 @@ require modernc.org/sqlite v1.47.0
 			os.Exit(1)
 		}
 		// Success — pass through any stderr (like server listening messages)
+		// but filter out Go module download noise
 		if stderrBuf.Len() > 0 {
-			fmt.Fprint(os.Stderr, stderrBuf.String())
+			for _, line := range strings.Split(stderrBuf.String(), "\n") {
+				if strings.HasPrefix(line, "go: finding") || strings.HasPrefix(line, "go: found") || strings.HasPrefix(line, "go: downloading") {
+					continue
+				}
+				if strings.TrimSpace(line) != "" {
+					fmt.Fprintln(os.Stderr, line)
+				}
+			}
 		}
 		return nil
 	}
