@@ -112,7 +112,13 @@ func execInDir(dir, goSource, mode string, extra ...string) error {
 
 go 1.22
 
-require modernc.org/sqlite v1.47.0
+require (
+	github.com/go-sql-driver/mysql v1.7.1
+	github.com/lib/pq v1.10.9
+	github.com/redis/go-redis/v9 v9.3.0
+	golang.org/x/image v0.23.0
+	modernc.org/sqlite v1.47.0
+)
 `
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0644); err != nil {
 		return fmt.Errorf("cannot write go.mod: %w", err)

@@ -740,6 +740,8 @@ func cCall(obj Value, method string, args ...Value) Value {
 	case *CodongError:
 		v := cGet(obj, method)
 		if v != nil { return v }
+		// If the method is not a known error field, propagate the error
+		return o
 	case *cImageObj:
 		return cImageCall(o, method, args...)
 	}
@@ -1636,10 +1638,22 @@ func cWsWriteFrame(conn interface{ Write([]byte) (int, error) }, opcode byte, pa
 var cDB *sql.DB
 var cDbTempFile string
 
-func cDbConnect(dsn string) Value {
+func cDbConnect(dsn string, opts ...Value) Value {
 	// Auto-detect driver from URL scheme
 	if strings.HasPrefix(dsn, "mysql://") || strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
-		return cDbConnectMulti(dsn, nil)
+		var optsVal Value
+		if len(opts) > 0 { optsVal = opts[0] }
+		result := cDbConnectMulti(dsn, optsVal)
+		// Store named connection if name option provided
+		if len(opts) > 0 {
+			if m, ok := opts[0].(*CodongMap); ok {
+				if name, ok := m.Entries["name"]; ok {
+					cDbNamedConns[toString(name)] = cDB
+					cDbNamedSchemes[toString(name)] = cDbScheme
+				}
+			}
+		}
+		return result
 	}
 
 	// Strip SQLite URL prefix if present
@@ -1661,10 +1675,26 @@ func cDbConnect(dsn string) Value {
 	cDB, err = sql.Open("sqlite", cleanDSN)
 	if err != nil { return cError("E2003", "db connect failed: " + err.Error()) }
 	cDB.SetMaxOpenConns(1)
+	// Apply options
+	if len(opts) > 0 {
+		if m, ok := opts[0].(*CodongMap); ok {
+			if v, ok := m.Entries["max_open"]; ok { cDB.SetMaxOpenConns(int(toFloat(v))) }
+			if v, ok := m.Entries["max_idle"]; ok { cDB.SetMaxIdleConns(int(toFloat(v))) }
+		}
+	}
 	if err := cDB.Ping(); err != nil { return cError("E2003", "connection failed: " + err.Error()) }
 	// WAL mode for file-based only
 	if cleanDSN != "" && !strings.Contains(cleanDSN, "codong-mem") {
 		cDB.Exec("PRAGMA journal_mode=WAL")
+	}
+	// Store named connection if name option provided
+	if len(opts) > 0 {
+		if m, ok := opts[0].(*CodongMap); ok {
+			if name, ok := m.Entries["name"]; ok {
+				cDbNamedConns[toString(name)] = cDB
+				cDbNamedSchemes[toString(name)] = cDbScheme
+			}
+		}
 	}
 	return cMap("_type", "db_connection", "status", "connected", "dsn", dsn)
 }
@@ -1696,14 +1726,14 @@ func cDbError(err error) *CodongError {
 	msg := err.Error()
 	switch {
 	case strings.Contains(msg, "UNIQUE constraint failed"):
-		return cError("E2002_DUPLICATE_KEY", msg)
+		return cError("E2002_DUPLICATE_KEY", msg, "fix", "use db.upsert() or check for existing record before insert")
 	case strings.Contains(msg, "syntax error") ||
 		strings.Contains(msg, "no such table") ||
 		strings.Contains(msg, "no such column") ||
 		strings.Contains(msg, "near \""):
-		return cError("E2004_QUERY_FAILED", msg)
+		return cError("E2004_QUERY_FAILED", msg, "fix", "check SQL syntax and table/column names")
 	default:
-		return cError("E2003", msg)
+		return cError("E2003", msg, "fix", "check database connection and query")
 	}
 }
 
@@ -1997,20 +2027,30 @@ func cDbTransaction(fnVal Value, opts ...Value) Value {
 	cDbTx = tx
 	// Create a tx object with methods that work within the transaction
 	txObj := cMap("_type", "db_tx")
+	// cTxAutoErr auto-panics with errors in transaction context
+	cTxAutoErr := func(result Value) Value {
+		if e, ok := result.(*CodongError); ok {
+			panic(&cReturnSignal{Value: e})
+		}
+		return result
+	}
 	cSet(txObj, "update", func(args ...Value) Value {
-		return cDbUpdate(toString(args[0]), args[1], args[2])
+		return cTxAutoErr(cDbUpdate(toString(args[0]), args[1], args[2]))
 	})
 	cSet(txObj, "insert", func(args ...Value) Value {
-		return cDbInsert(toString(args[0]), args[1])
+		return cTxAutoErr(cDbInsert(toString(args[0]), args[1]))
 	})
 	cSet(txObj, "delete", func(args ...Value) Value {
-		return cDbDelete(toString(args[0]), args[1])
+		return cTxAutoErr(cDbDelete(toString(args[0]), args[1]))
 	})
 	cSet(txObj, "query", func(args ...Value) Value {
+		var result Value
 		if len(args) > 1 {
-			return cDbQuery(toString(args[0]), toList(args[1]).Elements...)
+			result = cDbQuery(toString(args[0]), toList(args[1]).Elements...)
+		} else {
+			result = cDbQuery(toString(args[0]))
 		}
-		return cDbQuery(toString(args[0]))
+		return cTxAutoErr(result)
 	})
 	cSet(txObj, "query_one", func(args ...Value) Value {
 		if len(args) > 1 {
@@ -3447,9 +3487,36 @@ func cDbUsing(name string) Value {
 	if db, ok := cDbNamedConns[name]; ok {
 		cDB = db
 		if s, ok := cDbNamedSchemes[name]; ok { cDbScheme = s }
-		return cMap("_type", "db_using", "_name", name)
+		// Return a proxy map with db methods for chaining
+		proxy := cMap("_type", "db_using", "_name", name)
+		cSet(proxy, "query", func(args ...Value) Value {
+			if len(args) > 1 { return cDbQuery(toString(args[0]), toList(args[1]).Elements...) }
+			return cDbQuery(toString(args[0]))
+		})
+		cSet(proxy, "query_one", func(args ...Value) Value {
+			if len(args) > 1 { return cDbQueryOne(toString(args[0]), toList(args[1]).Elements...) }
+			return cDbQueryOne(toString(args[0]))
+		})
+		cSet(proxy, "find", func(args ...Value) Value {
+			if len(args) > 1 { return cDbFind(toString(args[0]), args[1]) }
+			return cDbFind(toString(args[0]), nil)
+		})
+		cSet(proxy, "find_one", func(args ...Value) Value {
+			if len(args) > 1 { return cDbFindOne(toString(args[0]), args[1]) }
+			return cDbFindOne(toString(args[0]), nil)
+		})
+		cSet(proxy, "insert", func(args ...Value) Value {
+			return cDbInsert(toString(args[0]), args[1])
+		})
+		cSet(proxy, "update", func(args ...Value) Value {
+			return cDbUpdate(toString(args[0]), args[1], args[2])
+		})
+		cSet(proxy, "delete", func(args ...Value) Value {
+			return cDbDelete(toString(args[0]), args[1])
+		})
+		return proxy
 	}
-	return cError("E2002", "no database connection named: "+name)
+	return cError("E2003", "no database connection named: "+name)
 }
 
 var cDbLastInsertIdVal float64

@@ -173,9 +173,17 @@ func (g *Generator) genStatement(stmt parser.Statement) {
 	case *parser.TryCatchStatement:
 		g.genTryCatch(s)
 	case *parser.BreakStatement:
-		g.write("break")
+		if g.inTryCatch {
+			g.write("panic(\"__codong_break__\")")
+		} else {
+			g.write("break")
+		}
 	case *parser.ContinueStatement:
-		g.write("continue")
+		if g.inTryCatch {
+			g.write("panic(\"__codong_continue__\")")
+		} else {
+			g.write("continue")
+		}
 	case *parser.BlockStatement:
 		for _, inner := range s.Statements {
 			g.genStatement(inner)
@@ -550,6 +558,8 @@ func (g *Generator) genTryCatch(s *parser.TryCatchStatement) {
 	g.write("panic(_r)")
 	g.indent--
 	g.write("}")
+	// Handle break/continue signals from inside try block
+	g.writef("if _bs, ok := _r.(string); ok && (_bs == \"__codong_break__\" || _bs == \"__codong_continue__\") { return }")
 	// Re-panic for non-error panics
 	g.write("panic(_r)")
 	g.indent--
@@ -814,7 +824,19 @@ func (g *Generator) genMethodCall(member *parser.MemberAccessExpression, argumen
 	// Server/group object method calls are handled at runtime by cCall
 	// which checks _type on the map. No special-casing needed here.
 
+	// Append named args as trailing map for generic cCall dispatch
+	if named != nil && len(named) > 0 {
+		namedParts := []string{}
+		for k, v := range named {
+			namedParts = append(namedParts, fmt.Sprintf("%q, %s", k, g.genExpr(v)))
+		}
+		args = append(args, fmt.Sprintf("cMap(%s)", strings.Join(namedParts, ", ")))
+	}
+
 	// Object method call: obj.method(args)
+	if len(args) == 0 {
+		return fmt.Sprintf("cCall(%s, %q)", obj, method)
+	}
 	return fmt.Sprintf("cCall(%s, %q, %s)", obj, method, strings.Join(args, ", "))
 }
 
@@ -866,6 +888,9 @@ func (g *Generator) genWebCall(method string, args []string, named map[string]pa
 func (g *Generator) genDbCall(method string, args []string, named map[string]parser.Expression) string {
 	switch method {
 	case "connect":
+		if len(args) > 1 {
+			return fmt.Sprintf("cDbConnect(toString(%s), %s)", args[0], args[1])
+		}
 		return fmt.Sprintf("cDbConnect(toString(%s))", args[0])
 	case "disconnect":
 		return "cDbDisconnectRT()"
