@@ -137,7 +137,7 @@ interface Searchable {
 
 ## 7. Module System
 
-Built-in modules (8) are available directly — no `import` needed: `web`, `db`, `llm`, `agent`, `cloud`, `queue`, `cron`, `error`.
+Built-in modules are available directly — no `import` needed: `web`, `db`, `http`, `llm`, `fs`, `json`, `env`, `time`, `redis`, `image`, `oauth`, `agent`, `cloud`, `queue`, `cron`, `error`.
 
 ```
 server = web.serve(port: 8080)
@@ -200,7 +200,289 @@ select {
 - Send: `ch <- value` (space before `<-`). Receive: `<-ch` (no space, prefix operator).
 - `select` multiplexes channel operations. Each arm uses `{ }` block syntax. Assignment is optional — `<-ch { ... }` discards the received value.
 
-## 9. Error Handling
+## 9. Infrastructure Modules
+
+### fs — File System
+
+| Method | Description |
+|--------|-------------|
+| `fs.read(path)` | Read file as string. Returns `null` if not found. |
+| `fs.write(path, content)` | Write string to file (creates or overwrites). |
+| `fs.append(path, content)` | Append string to file. |
+| `fs.delete(path)` | Delete file. |
+| `fs.copy(src, dst)` | Copy file. |
+| `fs.move(src, dst)` | Move/rename file. |
+| `fs.exists(path)` | Returns bool. |
+| `fs.list(dir)` | List directory contents as list of maps `{name, path, is_dir, size}`. |
+| `fs.mkdir(path)` | Create directory (including parents). |
+| `fs.rmdir(path)` | Remove directory (recursive). |
+| `fs.read_json(path)` | Read and parse JSON file. Returns map/list. |
+| `fs.write_json(path, data)` | Serialize data to JSON and write. |
+| `fs.read_lines(path)` | Read file as list of strings (one per line). |
+| `fs.write_lines(path, lines)` | Write list of strings as lines. |
+
+### json — JSON Serialization
+
+| Method | Description |
+|--------|-------------|
+| `json.parse(str)` | Parse JSON string to map/list. Error on invalid JSON. |
+| `json.stringify(data)` | Serialize to JSON string. |
+| `json.stringify(data, indent: 2)` | Pretty-print with indent. |
+| `json.valid(str)` | Returns bool. |
+| `json.merge(a, b)` | Deep merge two maps. |
+| `json.get(data, path)` | Get nested value by dot-path (`"user.address.city"`). |
+| `json.set(data, path, value)` | Set nested value by dot-path. |
+| `json.flatten(data)` | Flatten nested map to `{"a.b.c": value}`. |
+| `json.unflatten(data)` | Reverse of flatten. |
+
+### env — Environment Variables
+
+| Method | Description |
+|--------|-------------|
+| `env.get(key)` | Get env var. Returns `null` if not set. |
+| `env.get(key, default)` | Get with fallback. |
+| `env.require(key)` | Get or throw `E7001_ENV_NOT_SET`. |
+| `env.has(key)` | Returns bool. |
+| `env.all()` | Returns all env vars as map. |
+| `env.load(path)` | Load `.env` file into environment. |
+
+### time — Date and Time
+
+| Method | Description |
+|--------|-------------|
+| `time.now()` | Current Unix timestamp (seconds as number). |
+| `time.now_iso()` | Current time as ISO 8601 string. |
+| `time.sleep(ms)` | Sleep for milliseconds. |
+| `time.format(ts, fmt)` | Format timestamp. `fmt`: `"date"`, `"datetime"`, `"iso"`, `"rfc2822"`. |
+| `time.parse(str)` | Parse time string to Unix timestamp. |
+| `time.diff(ts1, ts2)` | Difference in seconds. |
+| `time.since(ts)` | Seconds since timestamp. |
+| `time.until(ts)` | Seconds until timestamp. |
+| `time.add(ts, duration)` | Add duration string (`"1h"`, `"30m"`, `"7d"`). |
+| `time.is_before(ts1, ts2)` | Returns bool. |
+| `time.is_after(ts1, ts2)` | Returns bool. |
+| `time.today_start()` | Unix timestamp of midnight today (local). |
+| `time.today_end()` | Unix timestamp of 23:59:59 today (local). |
+
+### http — HTTP Client
+
+| Method | Description |
+|--------|-------------|
+| `http.get(url)` | GET request. Returns response map. |
+| `http.get(url, headers: map)` | GET with custom headers. |
+| `http.post(url, body)` | POST with JSON body. |
+| `http.post(url, body, headers: map)` | POST with headers. |
+| `http.put(url, body)` | PUT request. |
+| `http.patch(url, body)` | PATCH request. |
+| `http.delete(url)` | DELETE request. |
+| `http.request(method, url, body: map, headers: map)` | Generic request. |
+
+Response map fields: `status` (number), `ok` (bool), `body` (string), `json` (parsed body), `headers` (map), `error` (CodongError or null).
+
+HTTP errors use `?` to propagate: `resp = http.get(url)?` — throws `E3001_HTTP_TIMEOUT`, `E3003_HTTP_4XX`, `E3004_HTTP_5XX`, etc.
+
+## 10. Redis Module
+
+```
+redis.connect("redis://localhost:6379")
+redis.connect("redis://localhost:6379", name: "session")  // named instance
+redis.using("session")                                    // switch instance
+```
+
+**Key-Value:**
+
+| Method | Description |
+|--------|-------------|
+| `redis.set(key, value)` | Set string value. |
+| `redis.set(key, value, ttl: seconds)` | Set with TTL. |
+| `redis.get(key)` | Get string. Returns `null` if missing. |
+| `redis.delete(key)` | Delete key. |
+| `redis.exists(key)` | Returns bool. |
+| `redis.expire(key, seconds)` | Set TTL on existing key. |
+| `redis.ttl(key)` | Get remaining TTL in seconds. |
+| `redis.incr(key)` | Increment by 1. |
+| `redis.incr_by(key, n)` | Increment by n. |
+| `redis.decr(key)` | Decrement by 1. |
+
+**Caching:**
+
+| Method | Description |
+|--------|-------------|
+| `redis.cache(key, ttl: seconds, loader: fn)` | Return cached value or call `loader()` and cache result. Singleflight — concurrent calls wait for one load. Loader errors are not cached. |
+| `redis.invalidate(key)` | Delete cache key. |
+| `redis.invalidate_pattern(pattern)` | Delete all keys matching glob pattern. |
+
+**Distributed Lock:**
+
+```
+lock = redis.lock("payment:{order_id}", ttl: 30)
+try {
+    // critical section
+} catch e {
+    print(e.code)   // E8004_LOCK_TIMEOUT
+} finally {
+    lock.release()
+}
+```
+
+**Pub/Sub:**
+
+| Method | Description |
+|--------|-------------|
+| `redis.publish(channel, message)` | Publish message to channel. |
+| `redis.subscribe(channel, fn(msg))` | Subscribe to channel with handler. Blocking. |
+
+**Sorted Sets (Leaderboards):**
+
+| Method | Description |
+|--------|-------------|
+| `redis.zadd(key, map)` | Add members with scores: `{member: score, ...}`. |
+| `redis.zrange(key, start, stop)` | Members by score ascending. |
+| `redis.zrange(key, start, stop, with_scores: true)` | Include scores in result. |
+| `redis.zrevrange(key, start, stop)` | Members by score descending. |
+| `redis.zrevrange(key, start, stop, with_scores: true)` | Include scores. |
+| `redis.zrank(key, member)` | Rank (0-based, ascending). |
+| `redis.zrevrank(key, member)` | Rank (0-based, descending). |
+| `redis.zscore(key, member)` | Score of member. |
+| `redis.zincrby(key, member, delta)` | Increment member score. |
+
+**Rate Limiter:**
+
+```
+limiter = redis.rate_limiter("api:{user_id}", requests: 100, window: 60)
+// window in seconds; uses sliding window algorithm
+ok = limiter.allow()     // bool
+remaining = limiter.remaining()
+reset_at = limiter.reset_at()  // Unix timestamp
+```
+
+## 11. Image Module
+
+```
+img = image.open("./photo.jpg")
+img = image.from_bytes(bytes_data)       // from binary string
+```
+
+**Info:**
+
+| Method | Description |
+|--------|-------------|
+| `image.info(path)` | Returns `{width, height, format, size}` without loading pixels. |
+| `image.read_exif(path)` | Returns EXIF metadata as map. |
+| `img.width()` | Image width in pixels. |
+| `img.height()` | Image height in pixels. |
+
+**Transform:**
+
+| Method | Description |
+|--------|-------------|
+| `img.resize(w, h)` | Resize to exact dimensions (may distort). |
+| `img.fit(w, h)` | Fit within box, preserve aspect ratio (letterbox). |
+| `img.cover(w, h)` | Cover box, preserve aspect ratio (crop edges). |
+| `img.crop(x, y, w, h)` | Crop rectangle. |
+| `img.crop_center(w, h)` | Crop from center. |
+| `img.smart_crop(w, h)` | Content-aware crop (focus on faces/subjects). |
+| `img.thumbnail(size)` | Fit within size×size square. |
+| `img.extend(w, h, color: "#ffffff")` | Extend canvas with background color. |
+| `img.rotate(degrees)` | Rotate clockwise. |
+| `img.auto_rotate()` | Rotate using EXIF orientation. |
+| `img.flip_horizontal()` | Mirror left-right. |
+| `img.flip_vertical()` | Mirror top-bottom. |
+
+**Filters:**
+
+| Method | Description |
+|--------|-------------|
+| `img.to_grayscale()` | Convert to grayscale. |
+| `img.blur(sigma)` | Gaussian blur. |
+| `img.sharpen(sigma)` | Sharpen. |
+| `img.brightness(n)` | Adjust brightness (-1.0 to 1.0). |
+| `img.contrast(n)` | Adjust contrast (-1.0 to 1.0). |
+| `img.gamma(n)` | Gamma correction. |
+| `img.saturation(n)` | Adjust saturation (-1.0 to 1.0). |
+| `img.tint(hex)` | Apply color tint (`"#ff0000"`). |
+| `img.to_rgb()` | Convert to RGB color space. |
+| `img.strip_metadata()` | Remove EXIF and ICC data. |
+| `img.optimize(quality: 80)` | Set compression quality (1-100). |
+
+**Watermark:**
+
+| Method | Description |
+|--------|-------------|
+| `img.watermark_text(text, position: "bottom_right", color: "#ffffff", size: 24)` | Text watermark. `position`: `"top_left"`, `"top_right"`, `"bottom_left"`, `"bottom_right"`, `"center"`. |
+| `img.watermark(overlay_img, position: "bottom_right")` | Image watermark. |
+| `img.watermark_tile(overlay_img)` | Tiled watermark across entire image. |
+| `img.watermark_image(overlay_img, x, y)` | Watermark at exact coordinates. |
+
+**Output:**
+
+| Method | Description |
+|--------|-------------|
+| `img.save(path)` | Save to file. Format inferred from extension (`.jpg`, `.png`, `.gif`, `.webp`). |
+| `img.to_bytes(format)` | Returns binary string. `format`: `"jpeg"`, `"png"`, `"gif"`, `"webp"`. |
+| `img.to_base64(format)` | Returns base64-encoded string. |
+
+## 12. OAuth Module
+
+```
+oauth.provider("github", {
+    client_id: env.require("GITHUB_CLIENT_ID"),
+    client_secret: env.require("GITHUB_CLIENT_SECRET"),
+    redirect_uri: "https://example.com/auth/callback",
+})
+// Providers: "github", "google", "microsoft"
+```
+
+**OAuth Flow:**
+
+| Method | Description |
+|--------|-------------|
+| `oauth.authorization_url(provider)` | Returns redirect URL for OAuth login. |
+| `oauth.authorization_url(provider, state: str, pkce: map)` | With CSRF state and PKCE. |
+| `oauth.exchange_code(provider, code)` | Exchange authorization code for token. |
+| `oauth.get_profile(provider, access_token)` | Fetch user profile from provider. |
+
+**JWT:**
+
+| Method | Description |
+|--------|-------------|
+| `oauth.configure_jwt(secret: str, algorithm: "HS256", expires_in: 3600)` | Configure JWT settings. |
+| `oauth.sign_jwt(payload)` | Sign payload and return JWT string. |
+| `oauth.sign_refresh_token(payload)` | Sign refresh token. |
+| `oauth.verify_jwt(token)` | Verify and decode. Returns payload map or throws error. |
+| `oauth.verify_refresh_token(token)` | Verify refresh token. |
+| `oauth.decode_jwt(token)` | Decode without verifying signature. |
+| `oauth.revoke_jwt(token)` | Add token to revocation list. |
+| `oauth.is_revoked(token)` | Returns bool. |
+
+**PKCE & Security:**
+
+| Method | Description |
+|--------|-------------|
+| `oauth.generate_state()` | Returns random CSRF state string. |
+| `oauth.generate_pkce()` | Returns `{verifier, challenge, method}` for PKCE flow. |
+| `oauth.hash_token(token)` | Returns SHA-256 hash of token. |
+
+**RBAC (Role-Based Access Control):**
+
+| Method | Description |
+|--------|-------------|
+| `oauth.define_roles({admin: ["read","write","delete"], user: ["read"]})` | Define role → permissions mapping. |
+| `oauth.has_permission(user, permission)` | Returns bool. `user` must have `.role` field. |
+| `oauth.check_permission(user, permission)` | Same but throws `E9005_FORBIDDEN` on failure. |
+
+**Middleware integration:**
+
+```
+server.use(fn(req, next) {
+    token = req.headers["Authorization"].replace("Bearer ", "")
+    user = oauth.verify_jwt(token)?
+    req.user = user
+    return next(req)
+})
+```
+
+## 13. Error Handling
 
 All errors are structured JSON with `code`, `message`, `fix`, `retry` fields.
 
@@ -223,10 +505,12 @@ data = db.find("users", {id: 1})?
 - `error.set_format("compact")` switches to compact format (saves 39% tokens).
 - `?` postfix operator: if the expression evaluates to an error, immediately return that error to the caller; otherwise, evaluate to the expression's value unchanged. No optional chaining `?.` syntax.
 - Error identity: an error object is created exclusively via `error.new()` or `error.wrap()` and carries an internal type tag. Regular maps with `code` or `error` fields are NOT treated as errors by `?`.
+- `break` and `continue` inside `try/catch` blocks work correctly — loop control flow is preserved after error recovery.
+- `error.retry` field: `true` means the operation is retryable (e.g., transient network failure). `false` means permanent failure. Check `err.retry` before retrying.
 
 Compact format: `err_code:E2001_NOT_FOUND|src:db.find|fix:run db.migrate()|retry:false`
 
-## 10. Built-in Functions
+## 14. Built-in Functions
 
 These are globally available without import. They are not keywords — they are functions.
 
@@ -241,7 +525,7 @@ These are globally available without import. They are not keywords — they are 
 
 Length: use `.len()` method on each type (`s.len()`, `l.len()`, `m.len()`). No global `len()` function.
 
-## 11. Built-in Type Methods
+## 15. Built-in Type Methods
 
 **Mutability rule:** strings are immutable (all methods return new strings). Lists are mutable — `push`, `pop`, `sort`, `reverse`, `shift`, `unshift` modify in place and return `self` for chaining. Maps have only one mutating method: `delete`. All other methods including `merge`, `filter`, `map_values` return new values without modifying the original.
 
@@ -309,7 +593,7 @@ Mutating methods modify the original list and return `self`. Non-mutating method
 | `m.map_values(fn)` | no | map | new map with transformed values |
 | `m.filter(fn)` | no | map | new filtered map |
 
-## 12. Operator Precedence
+## 16. Operator Precedence
 
 From highest to lowest:
 
@@ -326,7 +610,7 @@ From highest to lowest:
 | 9 | `<-` | channel send/receive |
 | 10 | `=` `+=` `-=` `*=` `/=` | assignment |
 
-## 13. Keywords (23 total)
+## 17. Keywords (23 total)
 
 ```
 fn       return   if       else     for      while    match
@@ -344,7 +628,7 @@ Not keywords (built-in modules or functions, can appear in expressions):
 - `bridge` — `codong.toml` config section
 - `use` — valid identifier (e.g., `server.use(middleware)`)
 
-## 14. Mandatory Code Style
+## 18. Mandatory Code Style
 
 | Rule | Standard |
 |------|----------|
@@ -358,7 +642,7 @@ Not keywords (built-in modules or functions, can appear in expressions):
 
 `codong fmt` enforces all style rules automatically.
 
-## 15. Go Bridge Extension Protocol
+## 19. Go Bridge Extension Protocol
 
 Go Bridge allows human architects to wrap any Go library for AI consumption.
 

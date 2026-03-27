@@ -511,7 +511,7 @@ s = 42 as string
 
 ## 7. Module System
 
-**Built-in modules (8):** `web`, `db`, `llm`, `agent`, `cloud`, `queue`, `cron`, `error` — no import needed.
+**Built-in modules:** `web`, `db`, `http`, `llm`, `fs`, `json`, `env`, `time`, `redis`, `image`, `oauth`, `agent`, `cloud`, `queue`, `cron`, `error` — no import needed.
 
 ```
 // CORRECT — built-in modules used directly
@@ -1010,6 +1010,542 @@ if result.error {
 
 ---
 
+## 16. Infrastructure Modules (fs, json, env, time, http)
+
+### fs — File System
+
+```
+// CORRECT
+content = fs.read("./config.txt")      // returns string, or null if missing
+fs.write("./out.txt", "hello\n")
+fs.append("./log.txt", "line\n")
+fs.delete("./tmp.txt")
+fs.copy("./src.txt", "./dst.txt")
+fs.move("./old.txt", "./new.txt")
+exists = fs.exists("./data.txt")       // bool
+files = fs.list("./uploads")           // [{name, path, is_dir, size}, ...]
+fs.mkdir("./data/cache")
+fs.rmdir("./old_dir")
+data = fs.read_json("./config.json")   // returns map/list
+fs.write_json("./out.json", data)
+lines = fs.read_lines("./data.csv")    // returns list of strings
+fs.write_lines("./out.csv", lines)
+
+// CORRECT — fs.read returns null (not error) for missing files
+content = fs.read("./maybe.txt")
+if content == null {
+    content = "default"
+}
+
+// WRONG — do not use ? on fs.read (it returns null, not error)
+content = fs.read("./maybe.txt")?   // WRONG: null is not an error
+```
+
+### json — JSON
+
+```
+// CORRECT
+data = json.parse('{"key": "value"}')
+str = json.stringify(data)
+str = json.stringify(data, indent: 2)     // pretty print
+ok = json.valid(str)                      // bool
+merged = json.merge(map_a, map_b)
+city = json.get(data, "user.address.city")     // dot-path access
+data = json.set(data, "user.address.city", "NYC")
+flat = json.flatten(data)                 // {"a.b.c": value}
+nested = json.unflatten(flat)
+
+// WRONG — do not use single quotes for JSON strings in Codong
+data = json.parse('{"key": "value"}')    // the JSON itself uses ", fine
+// WRONG — json.parse expects a string argument
+data = json.parse(42)
+```
+
+### env — Environment Variables
+
+```
+// CORRECT
+db_url = env.get("DATABASE_URL")              // null if not set
+host = env.get("HOST", "localhost")           // with default
+secret = env.require("JWT_SECRET")            // throws E7001 if not set
+has_debug = env.has("DEBUG")                  // bool
+all_vars = env.all()                          // map of all env vars
+env.load("./.env")                            // load .env file
+
+// WRONG — do not hardcode secrets; use env.require
+secret = "hardcoded_secret_123"
+```
+
+### time — Date and Time
+
+```
+// CORRECT
+ts = time.now()                               // Unix timestamp (number)
+iso = time.now_iso()                          // "2026-03-26T10:30:00Z"
+time.sleep(1000)                              // sleep 1 second (1000ms)
+formatted = time.format(ts, "datetime")       // "2026-03-26 10:30:00"
+formatted = time.format(ts, "date")           // "2026-03-26"
+formatted = time.format(ts, "iso")            // ISO 8601
+formatted = time.format(ts, "rfc2822")        // RFC 2822
+parsed = time.parse("2026-03-26T10:30:00Z")   // returns Unix timestamp
+delta = time.diff(ts1, ts2)                   // seconds between (absolute)
+elapsed = time.since(ts)                      // seconds since ts
+remaining = time.until(ts)                    // seconds until ts
+future = time.add(ts, "1h")                   // add 1 hour
+future = time.add(ts, "30m")                  // add 30 minutes
+future = time.add(ts, "7d")                   // add 7 days
+is_past = time.is_before(ts, time.now())
+is_future = time.is_after(ts, time.now())
+today_start = time.today_start()              // midnight today (Unix ts)
+today_end = time.today_end()                  // 23:59:59 today (Unix ts)
+
+// WRONG — time.sleep takes milliseconds, not seconds
+time.sleep(1)     // WRONG: sleeps 1ms, not 1 second
+time.sleep(1000)  // CORRECT: sleeps 1 second
+```
+
+### http — HTTP Client
+
+```
+// CORRECT — GET request
+resp = http.get("https://api.example.com/users")
+resp = http.get("https://api.example.com/users", headers: {"Authorization": "Bearer {token}"})
+
+// CORRECT — POST with JSON body
+resp = http.post("https://api.example.com/users", {name: "Ada", role: "admin"})
+
+// CORRECT — other methods
+resp = http.put("https://api.example.com/users/1", {name: "Ada"})
+resp = http.patch("https://api.example.com/users/1", {name: "Ada"})
+resp = http.delete("https://api.example.com/users/1")
+resp = http.request("GET", "https://api.example.com/users", headers: {"X-Key": "value"})
+
+// Response fields:
+// resp.status    → number (200, 404, ...)
+// resp.ok        → bool (status < 400)
+// resp.body      → string (raw response body)
+// resp.json      → parsed body (map/list), or null if not JSON
+// resp.headers   → map
+// resp.error     → CodongError or null
+
+// CORRECT — propagate HTTP errors with ?
+resp = http.get("https://api.example.com/data")?
+// On 4xx: throws E3003_HTTP_4XX
+// On 5xx: throws E3004_HTTP_5XX
+// On timeout: throws E3001_HTTP_TIMEOUT
+
+// CORRECT — handle specific error codes
+try {
+    resp = http.get("https://api.example.com/data")?
+    print(resp.json)
+} catch e {
+    match e.code {
+        "E3003_HTTP_4XX" => print("not found or forbidden")
+        "E3001_HTTP_TIMEOUT" => print("request timed out")
+        _ => print("other error: {e.code}")
+    }
+}
+
+// WRONG — do not check resp.ok manually when using ?
+resp = http.get(url)?
+if resp.ok {        // WRONG: ? already guaranteed ok at this point
+    ...
+}
+```
+
+---
+
+## 17. Redis Module
+
+```
+// CORRECT — connect (required before any redis operation)
+redis.connect("redis://localhost:6379")
+redis.connect("redis://localhost:6379", name: "session")   // named instance
+redis.using("session")                                     // switch instance
+
+// WRONG — no connect() before use
+redis.set("key", "value")   // WRONG: not connected
+```
+
+**Key-Value:**
+
+```
+// CORRECT
+redis.set("user:1", "Ada")
+redis.set("user:1", "Ada", ttl: 3600)        // expires in 1 hour
+val = redis.get("user:1")                    // "Ada" or null
+redis.delete("user:1")
+exists = redis.exists("user:1")              // bool
+redis.expire("user:1", 600)                  // set TTL on existing key
+ttl = redis.ttl("user:1")                   // remaining seconds
+redis.incr("counter")                        // increment by 1
+redis.incr_by("counter", 5)
+redis.decr("counter")
+```
+
+**Caching (singleflight, no thundering herd):**
+
+```
+// CORRECT — loader called only on cache miss; concurrent misses wait for one load
+result = redis.cache("user:1:profile", ttl: 300, loader: fn() {
+    return db.find("users", {id: 1})
+})
+
+// CORRECT — invalidate
+redis.invalidate("user:1:profile")
+redis.invalidate_pattern("user:1:*")         // glob pattern
+
+// WRONG — do not manually get/set for caching (misses singleflight)
+val = redis.get("key")
+if val == null {
+    val = expensive_load()
+    redis.set("key", val, ttl: 300)
+}
+```
+
+**Distributed Lock:**
+
+```
+// CORRECT — acquire lock with TTL
+lock = redis.lock("order:{order_id}", ttl: 30)
+try {
+    process_order(order_id)
+} catch e {
+    print(e.code)    // E8004_LOCK_TIMEOUT if lock not acquired
+} finally {
+    lock.release()
+}
+
+// WRONG — no manual lock pattern
+redis.set("lock:key", "1")   // WRONG: not atomic, not safe
+```
+
+**Sorted Sets (Leaderboards):**
+
+```
+// CORRECT
+redis.zadd("leaderboard", {alice: 100, bob: 200, carol: 150})
+top3 = redis.zrevrange("leaderboard", 0, 2)                   // ["bob", "carol", "alice"]
+top3_scores = redis.zrevrange("leaderboard", 0, 2, with_scores: true)
+// returns [{member: "bob", score: 200}, ...]
+rank = redis.zrevrank("leaderboard", "bob")                    // 0 (top)
+score = redis.zscore("leaderboard", "alice")                   // 100
+redis.zincrby("leaderboard", "alice", 50)                     // alice score: 150
+
+// WRONG — zadd expects a map of member->score
+redis.zadd("leaderboard", ["alice", 100])   // WRONG: must be map
+```
+
+**Rate Limiter (sliding window):**
+
+```
+// CORRECT
+limiter = redis.rate_limiter("api:{user_id}", requests: 100, window: 60)
+// window is in seconds
+if limiter.allow() {
+    handle_request()
+} else {
+    print("rate limit exceeded, reset at: {limiter.reset_at()}")
+    print("remaining: {limiter.remaining()}")
+}
+
+// WRONG — do not implement rate limiting manually with incr/expire
+```
+
+**Pub/Sub:**
+
+```
+// CORRECT — publish
+redis.publish("notifications", json.stringify({user: "Ada", msg: "hello"}))
+
+// CORRECT — subscribe (blocking)
+redis.subscribe("notifications", fn(msg) {
+    data = json.parse(msg)
+    print("received: {data.msg}")
+})
+
+// WRONG — subscribe does not return a value
+sub = redis.subscribe("ch", fn(msg) { })   // WRONG: subscribe is blocking
+```
+
+---
+
+## 18. Image Module
+
+```
+// CORRECT — open from file
+img = image.open("./photo.jpg")
+
+// CORRECT — open from bytes (e.g., upload)
+img = image.from_bytes(req.file_bytes)
+
+// Info without loading pixels
+info = image.info("./photo.jpg")    // {width, height, format, size}
+exif = image.read_exif("./photo.jpg")
+
+// Dimensions
+w = img.width()
+h = img.height()
+```
+
+**Resize / Crop:**
+
+```
+// CORRECT — resize (exact, may distort)
+img.resize(800, 600)
+
+// CORRECT — fit (letterbox, no distortion)
+img.fit(800, 600)
+
+// CORRECT — cover (crop edges, no distortion, fills box)
+img.cover(800, 600)
+
+// CORRECT — crop
+img.crop(100, 100, 400, 300)    // x, y, width, height
+img.crop_center(400, 300)       // center crop
+img.smart_crop(400, 300)        // content-aware (face/subject detection)
+img.thumbnail(200)              // fit within 200x200
+
+// CORRECT — extend canvas
+img.extend(1000, 1000, color: "#ffffff")    // add white padding
+
+// WRONG — resize modifies the image object in place, do not expect a new object
+original = image.open("./photo.jpg")
+small = original.resize(200, 200)   // NOTE: original is also modified
+// To preserve original, reload:
+original = image.open("./photo.jpg")
+img = image.open("./photo.jpg")
+img.resize(200, 200)
+```
+
+**Transform:**
+
+```
+img.rotate(90)          // rotate 90 degrees clockwise
+img.auto_rotate()       // use EXIF orientation
+img.flip_horizontal()
+img.flip_vertical()
+```
+
+**Filters:**
+
+```
+img.to_grayscale()
+img.blur(2.0)           // gaussian blur, sigma value
+img.sharpen(1.0)
+img.brightness(0.1)     // +10% brightness (-1.0 to 1.0)
+img.contrast(-0.1)      // -10% contrast (-1.0 to 1.0)
+img.gamma(1.2)
+img.saturation(0.5)     // increase saturation
+img.tint("#ff6600")     // orange tint
+img.to_rgb()            // convert to RGB colorspace
+img.strip_metadata()    // remove EXIF/ICC data
+img.optimize(quality: 80)    // set JPEG/WebP quality (1-100)
+```
+
+**Watermark:**
+
+```
+// CORRECT — text watermark
+img.watermark_text("© 2026", position: "bottom_right", color: "#ffffff", size: 24)
+// positions: "top_left", "top_right", "bottom_left", "bottom_right", "center"
+
+// CORRECT — image watermark
+logo = image.open("./logo.png")
+img.watermark(logo, position: "bottom_right")
+img.watermark_tile(logo)                   // tiled across whole image
+img.watermark_image(logo, 50, 50)          // at exact x, y coordinates
+```
+
+**Output:**
+
+```
+// CORRECT — save to file (format from extension)
+img.save("./output.jpg")
+img.save("./output.png")
+img.save("./output.webp")
+
+// CORRECT — to bytes (for HTTP response or further processing)
+bytes = img.to_bytes("jpeg")         // format: "jpeg", "png", "gif", "webp"
+b64 = img.to_base64("jpeg")          // base64 string
+
+// WRONG — unknown format
+img.save("./output.bmp")   // WRONG: bmp not supported; use jpg/png/gif/webp
+```
+
+---
+
+## 19. OAuth Module
+
+```
+// CORRECT — configure OAuth provider (call once at startup)
+oauth.provider("github", {
+    client_id: env.require("GITHUB_CLIENT_ID"),
+    client_secret: env.require("GITHUB_CLIENT_SECRET"),
+    redirect_uri: "https://example.com/auth/callback",
+})
+// providers: "github", "google", "microsoft"
+
+// CORRECT — configure JWT (call once at startup)
+oauth.configure_jwt(
+    secret: env.require("JWT_SECRET"),
+    algorithm: "HS256",
+    expires_in: 3600,
+)
+```
+
+**OAuth Flow:**
+
+```
+// Step 1: redirect user
+url = oauth.authorization_url("github")
+// With PKCE (recommended):
+pkce = oauth.generate_pkce()          // {verifier, challenge, method}
+state = oauth.generate_state()        // random CSRF state
+url = oauth.authorization_url("github", state: state, pkce: pkce)
+
+// Step 2: exchange code (in callback handler)
+token_data = oauth.exchange_code("github", req.query.code)?
+profile = oauth.get_profile("github", token_data.access_token)?
+// profile has: {id, name, email, avatar_url, ...} (provider-specific)
+
+// WRONG — do not exchange code twice (codes are single-use)
+token1 = oauth.exchange_code("github", code)
+token2 = oauth.exchange_code("github", code)   // WRONG: code already used
+```
+
+**JWT:**
+
+```
+// CORRECT — sign JWT
+token = oauth.sign_jwt({user_id: user.id, role: user.role})
+refresh = oauth.sign_refresh_token({user_id: user.id})
+
+// CORRECT — verify JWT (throws E9001_INVALID_TOKEN on failure)
+payload = oauth.verify_jwt(token)?
+print(payload.user_id)
+print(payload.role)
+
+// CORRECT — decode without verification (for debugging only)
+decoded = oauth.decode_jwt(token)
+
+// CORRECT — revoke token
+oauth.revoke_jwt(token)
+is_bad = oauth.is_revoked(token)     // bool
+
+// WRONG — do not use verify_jwt without ? or try/catch
+payload = oauth.verify_jwt(expired_token)   // WRONG: panics on invalid token
+// CORRECT:
+try {
+    payload = oauth.verify_jwt(token)?
+} catch e {
+    print(e.code)    // E9001_INVALID_TOKEN or E9002_TOKEN_EXPIRED
+}
+```
+
+**RBAC:**
+
+```
+// CORRECT — define roles once at startup
+oauth.define_roles({
+    admin: ["read", "write", "delete", "manage"],
+    editor: ["read", "write"],
+    viewer: ["read"],
+})
+
+// CORRECT — check permission (returns bool)
+if oauth.has_permission(req.user, "write") {
+    save_document(doc)
+}
+
+// CORRECT — enforce permission (throws E9005_FORBIDDEN)
+oauth.check_permission(req.user, "delete")?
+
+// user must have a .role field
+user = {id: 1, role: "editor"}
+oauth.has_permission(user, "write")   // true
+oauth.has_permission(user, "delete")  // false
+
+// WRONG — has_permission requires a user map with .role field
+oauth.has_permission("admin", "write")   // WRONG: string is not a user map
+```
+
+**Middleware pattern:**
+
+```
+// CORRECT — JWT auth middleware
+server.use(fn(req, next) {
+    auth = req.headers["Authorization"]
+    if auth == null {
+        return {status: 401, body: json.stringify({error: "unauthorized"})}
+    }
+    token = auth.replace("Bearer ", "")
+    try {
+        req.user = oauth.verify_jwt(token)?
+    } catch e {
+        return {status: 401, body: json.stringify({error: e.message})}
+    }
+    return next(req)
+})
+
+// WRONG — do not call verify_jwt without handling the error
+server.use(fn(req, next) {
+    req.user = oauth.verify_jwt(req.headers["Authorization"])   // WRONG
+    return next(req)
+})
+```
+
+---
+
+## 20. Error Handling — Additional Rules
+
+```
+// CORRECT — break/continue work inside try/catch
+for i in range(0, 10) {
+    try {
+        result = might_fail(i)?
+    } catch e {
+        if e.retry {
+            continue    // retry is allowed: re-enter loop
+        }
+        break           // permanent error: exit loop
+    }
+}
+
+// CORRECT — check retry field before retrying
+try {
+    result = db.query("INSERT INTO ...", [])?
+} catch e {
+    print(e.code)      // "E2002_QUERY_FAILED"
+    print(e.retry)     // false (unique constraint: don't retry)
+    print(e.message)
+    print(e.fix)
+}
+
+// CORRECT — http errors have retry field too
+try {
+    resp = http.get("https://api.example.com/data")?
+} catch e {
+    if e.retry {
+        // E3001_HTTP_TIMEOUT or 5xx: retryable
+    } else {
+        // E3003_HTTP_4XX: permanent (bad request, auth, not found)
+    }
+}
+
+// WRONG — do not use ? outside of a function or try block at top level
+// ? at top-level terminates the program with an error (no recovery)
+data = db.find("users", {id: 999})?   // at top level: program exits on error
+// CORRECT at top level: use try/catch
+try {
+    data = db.find("users", {id: 999})?
+} catch e {
+    print("not found: {e.code}")
+}
+```
+
+---
+
 ## Quick Reference: Unique Syntax Rules
 
 | Scenario | Codong Way | NOT Allowed |
@@ -1024,7 +1560,13 @@ if result.error {
 | Map access | `m.key`, `m["key"]` | only `m.get()` |
 | List access | `l[0]`, `l[-1]` | `l.at(0)` |
 | HTTP server | `web.serve(port: 8080)` | `express()`, `http.ListenAndServe()` |
+| HTTP client | `http.get(url)` | `fetch(url)`, `requests.get(url)` |
 | DB connect | `db.connect(url)` | `new Pool()`, `createConnection()` |
+| File read | `fs.read(path)` | `os.ReadFile()`, `fs.readFileSync()` |
+| Cache | `redis.cache(key, ttl: n, loader: fn)` | manual get/set |
+| Image resize | `img.fit(w, h)` | `sharp().resize()`, `PIL.resize()` |
+| JWT sign | `oauth.sign_jwt(payload)` | `jwt.sign(payload, secret)` |
+| Rate limit | `redis.rate_limiter(key, requests: n, window: s)` | manual incr/expire |
 | LLM call | `llm.ask(model, prompt)` | `openai.chat.completions.create()` |
 | Error | `error.new(code, msg)` | `new Error()`, `raise Exception()` |
 | Goroutine | `go fn() {}()` | `async`, `go func(){}()` |
