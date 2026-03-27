@@ -2091,7 +2091,11 @@ func cDbTransaction(fnVal Value, opts ...Value) Value {
 	cSet(txObj, "query", func(args ...Value) Value {
 		var result Value
 		if len(args) > 1 {
-			result = cDbQuery(toString(args[0]), toList(args[1]).Elements...)
+			if l, ok := args[1].(*CodongList); ok {
+				result = cDbQuery(toString(args[0]), l.Elements...)
+			} else {
+				result = cDbQuery(toString(args[0]), args[1])
+			}
 		} else {
 			result = cDbQuery(toString(args[0]))
 		}
@@ -2099,7 +2103,8 @@ func cDbTransaction(fnVal Value, opts ...Value) Value {
 	})
 	cSet(txObj, "query_one", func(args ...Value) Value {
 		if len(args) > 1 {
-			return cDbQueryOne(toString(args[0]), toList(args[1]).Elements...)
+			if l, ok := args[1].(*CodongList); ok { return cDbQueryOne(toString(args[0]), l.Elements...) }
+			return cDbQueryOne(toString(args[0]), args[1])
 		}
 		return cDbQueryOne(toString(args[0]))
 	})
@@ -3529,11 +3534,17 @@ func cDbUsing(name string) Value {
 		// Return a proxy map with db methods for chaining
 		proxy := cMap("_type", "db_using", "_name", name)
 		cSet(proxy, "query", func(args ...Value) Value {
-			if len(args) > 1 { return cDbQuery(toString(args[0]), toList(args[1]).Elements...) }
+			if len(args) > 1 {
+				if l, ok := args[1].(*CodongList); ok { return cDbQuery(toString(args[0]), l.Elements...) }
+				return cDbQuery(toString(args[0]), args[1])
+			}
 			return cDbQuery(toString(args[0]))
 		})
 		cSet(proxy, "query_one", func(args ...Value) Value {
-			if len(args) > 1 { return cDbQueryOne(toString(args[0]), toList(args[1]).Elements...) }
+			if len(args) > 1 {
+				if l, ok := args[1].(*CodongList); ok { return cDbQueryOne(toString(args[0]), l.Elements...) }
+				return cDbQueryOne(toString(args[0]), args[1])
+			}
 			return cDbQueryOne(toString(args[0]))
 		})
 		cSet(proxy, "find", func(args ...Value) Value {
