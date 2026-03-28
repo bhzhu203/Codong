@@ -678,7 +678,7 @@ func (i *Interpreter) evalJsonModuleMethod(prop string) Object {
 				result := jsonSetPath(data, pathStr.Value, value)
 				return goValueToObject(result)
 
-			case "flatten":
+			case "flat", "flatten":
 				if len(args) < 1 {
 					return &MapObject{Entries: map[string]Object{}, Order: []string{}}
 				}
