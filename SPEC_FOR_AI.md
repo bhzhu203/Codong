@@ -1675,6 +1675,46 @@ try {
 | Iterate map | `for k in m.keys()` | `for k in m` |
 | Multiple returns | `return {a: 1, b: 2}` | `return a, b` |
 | Length | `x.len()` | `len(x)` |
+| Static build | `codong build -static app.cod` | `codong build app.cod` (dynamic) |
+
+---
+
+## CLI Commands
+
+```
+// CORRECT — run modes
+codong eval script.cod           # AST interpreter, instant startup, no stdlib
+codong run app.cod               # Go IR, full stdlib, development
+codong build app.cod             # Compile to dynamic binary (production)
+codong build -static app.cod     # Compile to static binary (portable)
+codong build app.cod -o myapp    # Custom output name
+codong build -static app.cod -o myapp  # Static binary with custom name
+
+// CORRECT — pass arguments to script
+codong run script.cod -- arg1 arg2 --verbose
+codong eval script.cod -- input.txt output.txt
+
+// CORRECT — other commands
+codong new myproject             # Create new project
+codong version                   # Show version
+codong fmt file.cod              # Format code (planned)
+```
+
+**Static vs Dynamic Build:**
+
+| Option | Binary Size | Portability | Use Case |
+|--------|-------------|-------------|----------|
+| `codong build app.cod` | ~15MB | Requires system libc | Development, same-OS deployment |
+| `codong build -static app.cod` | ~10MB | Fully standalone | Production, Docker, cross-distro |
+
+```
+// CORRECT — static build for maximum portability
+/tmp/codong build -static server.cod -o /app/server
+# Result: single static binary, no external dependencies
+
+// WRONG — static build may fail with CGO dependencies
+// Solution: use dynamic build or refactor to avoid CGO modules
+```
 
 ---
 

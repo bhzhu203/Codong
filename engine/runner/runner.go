@@ -87,7 +87,7 @@ func execBinaryWithArgs(binPath string, args []string) error {
 }
 
 // Build compiles a .cod file to a standalone binary.
-func Build(codFile, outputPath string) error {
+func Build(codFile, outputPath string, static bool) error {
 	source, err := os.ReadFile(codFile)
 	if err != nil {
 		return fmt.Errorf("cannot read %s: %w", codFile, err)
@@ -106,7 +106,7 @@ func Build(codFile, outputPath string) error {
 		return fmt.Errorf("parse errors")
 	}
 
-	return buildGoSource(goSource, outputPath)
+	return buildGoSource(goSource, outputPath, static)
 }
 
 func compile(source string, sourceDir string) (string, []string) {
@@ -146,10 +146,10 @@ func buildGoSourceTo(goSource, outputPath string) error {
 	}
 	defer os.RemoveAll(dir)
 
-	return execInDir(dir, goSource, "cache", outputPath)
+	return execInDirWithStatic(dir, goSource, outputPath, false)
 }
 
-func buildGoSource(goSource, outputPath string) error {
+func buildGoSource(goSource, outputPath string, static bool) error {
 	dir, err := os.MkdirTemp("", "codong-build-*")
 	if err != nil {
 		return fmt.Errorf("cannot create temp dir: %w", err)
@@ -161,11 +161,71 @@ func buildGoSource(goSource, outputPath string) error {
 		return fmt.Errorf("invalid output path: %w", err)
 	}
 
-	return execInDir(dir, goSource, "build", absOutput)
+	return execInDirWithStatic(dir, goSource, absOutput, static)
 }
 
-func execInDir(dir, goSource, mode string, extra ...string) error {
-	return execInDirWithArgs(dir, goSource, mode, []string{}, extra...)
+func execInDirWithStatic(dir, goSource, outputPath string, static bool) error {
+	// Write main.go
+	mainFile := filepath.Join(dir, "main.go")
+	if err := os.WriteFile(mainFile, []byte(goSource), 0644); err != nil {
+		return fmt.Errorf("cannot write main.go: %w", err)
+	}
+
+	// Write go.mod
+	goMod := `module codong-app
+
+go 1.22
+
+require (
+	github.com/go-sql-driver/mysql v1.7.1
+	github.com/lib/pq v1.10.9
+	github.com/redis/go-redis/v9 v9.3.0
+	golang.org/x/image v0.23.0
+	modernc.org/sqlite v1.47.0
+)
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0644); err != nil {
+		return fmt.Errorf("cannot write go.mod: %w", err)
+	}
+
+	// Run go mod tidy (suppress output — module download messages pollute test output)
+	tidy := exec.Command("go", "mod", "tidy")
+	tidy.Dir = dir
+	tidy.Stdout = nil
+	tidy.Stderr = nil
+	if err := tidy.Run(); err != nil {
+		return fmt.Errorf("go mod tidy failed: %w", err)
+	}
+
+	// go build -o output main.go
+	// Use -ldflags for static linking on supported platforms
+	var cmd *exec.Cmd
+	if static {
+		// Static compilation: use -ldflags to link statically
+		// -s -w: strip debug info
+		// -extldflags "-static": tell external linker to link statically
+		// CGO_ENABLED=0: disable CGO for pure Go static binary
+		cmd = exec.Command("go", "build", "-ldflags", "-s -w -extldflags '-static'", "-o", outputPath, "main.go")
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
+	} else {
+		cmd = exec.Command("go", "build", "-o", outputPath, "main.go")
+	}
+	cmd.Dir = dir
+	cmd.Stdout = os.Stdout
+	var buildStderr bytes.Buffer
+	cmd.Stderr = &buildStderr
+	if err := cmd.Run(); err != nil {
+		// Translate Go build errors to Codong errors
+		stderr := buildStderr.String()
+		if strings.Contains(stderr, "# command-line-arguments") || strings.Contains(stderr, "main.go:") {
+			codongErr := translateGoError(stderr)
+			fmt.Print(codongErr)
+			os.Exit(1)
+		}
+		return fmt.Errorf("go build failed: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "Built: %s\n", outputPath)
+	return nil
 }
 
 func execInDirWithArgs(dir, goSource, mode string, args []string, extra ...string) error {

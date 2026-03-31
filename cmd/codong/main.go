@@ -67,17 +67,31 @@ func main() {
 		fmt.Println("codong fmt: not yet implemented (stage 1)")
 	case "build":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: codong build <file.cod> [-o output]")
+			fmt.Fprintln(os.Stderr, "Usage: codong build <file.cod> [-o output] [-static]")
 			os.Exit(2)
 		}
-		input := os.Args[2]
-		output := strings.TrimSuffix(filepath.Base(input), ".cod")
-		for i, arg := range os.Args {
+		input := ""
+		output := ""
+		static := false
+		for i := 2; i < len(os.Args); i++ {
+			arg := os.Args[i]
 			if arg == "-o" && i+1 < len(os.Args) {
 				output = os.Args[i+1]
+				i++ // skip next arg
+			} else if arg == "-static" {
+				static = true
+			} else if !strings.HasPrefix(arg, "-") {
+				input = arg
 			}
 		}
-		if err := runner.Build(input, output); err != nil {
+		if input == "" {
+			fmt.Fprintln(os.Stderr, "error: no input file specified")
+			os.Exit(2)
+		}
+		if output == "" {
+			output = strings.TrimSuffix(filepath.Base(input), ".cod")
+		}
+		if err := runner.Build(input, output, static); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
