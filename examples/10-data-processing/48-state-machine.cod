@@ -1,0 +1,59 @@
+# Finite State Machine
+# Order lifecycle: pending → confirmed → shipped → delivered / cancelled
+# codong run 48-state-machine.cod
+
+fn create_fsm(initial, transitions) {
+    state = initial
+    history = [initial]
+
+    transition = fn(event) {
+        key = state + ":" + event
+        next = transitions.get(key, null)
+        if next == null {
+            return {ok: false, error: "invalid transition '{event}' from state '{state}'"}
+        }
+        state = next
+        history.push(state)
+        return {ok: true, state: state}
+    }
+
+    current = fn() { return state }
+    get_history = fn() { return history }
+
+    return {transition: transition, current: current, history: get_history}
+}
+
+order_transitions = {
+    "pending:confirm":    "confirmed",
+    "pending:cancel":     "cancelled",
+    "confirmed:ship":     "shipped",
+    "confirmed:cancel":   "cancelled",
+    "shipped:deliver":    "delivered",
+    "shipped:return":     "return_requested",
+    "return_requested:approve": "returned"
+}
+
+print("=== Order State Machine ===")
+
+fn process_order(order_id, events) {
+    fsm = create_fsm("pending", order_transitions)
+    print("\nOrder {order_id}:")
+    print("  Initial state: {fsm.current()}")
+
+    for event in events {
+        result = fsm.transition(event)
+        if result.ok {
+            print("  [{event}] → {result.state}")
+        } else {
+            print("  [{event}] ✗ {result.error}")
+        }
+    }
+
+    print("  Final state  : {fsm.current()}")
+    print("  History      : {fsm.history().join(' → ')}")
+}
+
+process_order("ORD-001", ["confirm", "ship", "deliver"])
+process_order("ORD-002", ["confirm", "cancel"])
+process_order("ORD-003", ["cancel", "confirm"])
+process_order("ORD-004", ["confirm", "ship", "return", "approve"])

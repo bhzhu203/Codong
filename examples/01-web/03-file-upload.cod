@@ -1,0 +1,39 @@
+# File Upload Service
+# Accepts image uploads, resizes to thumbnail, saves both
+# codong run 03-file-upload.cod
+
+fs.mkdir("./uploads")
+fs.mkdir("./thumbnails")
+
+server = web.serve(port: 3002)
+
+server.post("/upload", fn(req, res) {
+    file = req.file("image")
+    if file == null {
+        res.status(400).json({error: "no file provided"})
+        return
+    }
+
+    filename = time.now().unix().str() + "_" + file.name
+    path = "./uploads/" + filename
+    thumb_path = "./thumbnails/thumb_" + filename
+
+    fs.write(path, file.bytes)
+
+    img = image.open(path)
+    thumb = image.resize(img, 200, 200, fit: true)
+    image.save(thumb, thumb_path)
+
+    res.json({
+        ok: true,
+        filename: filename,
+        original: path,
+        thumbnail: thumb_path,
+        size: file.size
+    })
+})
+
+server.get("/uploads/:file", fn(req, res) {
+    path = "./uploads/" + req.param("file")
+    res.file(path)
+})

@@ -1,0 +1,63 @@
+# Fibonacci with Memoization
+# Demonstrates closures, recursion, and performance comparison
+# codong run 38-fibonacci-memoized.cod
+
+# Naive recursive (exponential time)
+fn fib_naive(n) {
+    if n <= 1 { return n }
+    return fib_naive(n - 1) + fib_naive(n - 2)
+}
+
+# Memoized (linear time)
+memo = {}
+fn fib_memo(n) {
+    if n <= 1 { return n }
+    key = str(n)
+    if memo.has(key) { return memo[key] }
+    result = fib_memo(n - 1) + fib_memo(n - 2)
+    memo[key] = result
+    return result
+}
+
+# Iterative (linear time, constant space)
+fn fib_iter(n) {
+    if n <= 1 { return n }
+    a = 0
+    b = 1
+    i = 2
+    loop {
+        c = a + b
+        a = b
+        b = c
+        i = i + 1
+        if i > n { break }
+    }
+    return b
+}
+
+print("=== Fibonacci Comparison ===")
+
+test_values = [5, 10, 20, 30]
+for n in test_values {
+    naive_start = time.now().unix()
+    naive = fib_naive(n)
+    naive_ms = time.now().unix() - naive_start
+
+    memo_start = time.now().unix()
+    memoized = fib_memo(n)
+    memo_ms = time.now().unix() - memo_start
+
+    iter_val = fib_iter(n)
+
+    print("fib({n}): naive={naive}({naive_ms}ms)  memo={memoized}({memo_ms}ms)  iter={iter_val}")
+}
+
+# First 15 Fibonacci numbers
+seq = []
+i = 0
+loop {
+    seq.push(fib_iter(i))
+    i = i + 1
+    if i > 14 { break }
+}
+print("\nSequence: {seq.join(', ')}")

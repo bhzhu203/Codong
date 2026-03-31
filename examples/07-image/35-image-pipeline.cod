@@ -1,0 +1,47 @@
+# Image Processing Pipeline
+# Resize → sharpen → watermark → optimize → save in multiple formats
+# codong run 35-image-pipeline.cod
+
+fs.mkdir("./pipeline-output")
+
+fn process_image(src_path, output_dir, name) {
+    img = image.open(src_path)
+
+    # Step 1: Resize to web standard
+    resized = image.resize(img, 1200, 800, fit: true)
+
+    # Step 2: Enhance
+    sharpened = image.sharpen(resized, 1.2)
+    brightened = image.brightness(sharpened, 1.05)
+
+    # Step 3: Watermark
+    branded = image.watermark(brightened, "Codong",
+        position: "bottom_right", opacity: 0.5)
+
+    # Step 4: Save in multiple formats
+    fs.mkdir(output_dir + "/" + name)
+
+    web_path  = output_dir + "/" + name + "/web.jpg"
+    thumb_path = output_dir + "/" + name + "/thumb.jpg"
+    full_path  = output_dir + "/" + name + "/full.png"
+
+    optimized = image.optimize(branded, quality: 85)
+    image.save(optimized, web_path)
+
+    thumb = image.resize(branded, 300, 200, fit: true)
+    image.save(thumb, thumb_path)
+
+    image.save(branded, full_path)
+
+    print("Processed: {name}")
+    print("  web   : {web_path}")
+    print("  thumb : {thumb_path}")
+    print("  full  : {full_path}")
+}
+
+# Create a sample source image
+img = image.create(2400, 1600, "#1A73E8")
+src = "/tmp/sample_source.png"
+image.save(img, src)
+
+process_image(src, "./pipeline-output", "hero")

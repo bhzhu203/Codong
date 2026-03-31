@@ -1,0 +1,48 @@
+# Batch Sentiment Analysis
+# Analyze customer reviews and store results in DB
+# codong run 18-sentiment-analysis.cod
+
+api_key = env.get("ANTHROPIC_API_KEY", "")
+db.connect("sqlite:///reviews.db")
+
+db.query("CREATE TABLE IF NOT EXISTS reviews (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    text TEXT,
+    sentiment TEXT,
+    score INTEGER,
+    analyzed_at TEXT
+)", [])
+
+reviews = [
+    "This product is absolutely amazing, best purchase I have made!",
+    "Terrible quality, broke after two days. Waste of money.",
+    "It is okay, nothing special but does the job.",
+    "Exceeded all my expectations, highly recommended!",
+    "Not what I expected from the description, somewhat disappointed."
+]
+
+print("Analyzing {reviews.len()} reviews...\n")
+
+for review in reviews {
+    response = llm.ask(
+        model: "claude-haiku-4-5-20251001",
+        system: "Classify sentiment. Reply JSON only: {\"sentiment\":\"positive|neutral|negative\",\"score\":1-10}",
+        prompt: review,
+        api_key: api_key,
+        max_tokens: 50
+    )
+
+    result = json.parse(response.text)
+    sentiment = result.sentiment
+    score = result.score
+
+    db.query("INSERT INTO reviews (text, sentiment, score, analyzed_at) VALUES (?,?,?,?)",
+        [review, sentiment, score, time.now().format("YYYY-MM-DD HH:mm:ss")])
+
+    print("  [{sentiment}] score={score} — {review.slice(0,50)}...")
+}
+
+pos = db.count("reviews", "sentiment='positive'")
+neg = db.count("reviews", "sentiment='negative'")
+avg = db.avg("reviews", "score", "1=1")
+print("\nPositive: {pos}, Negative: {neg}, Avg score: {avg}")

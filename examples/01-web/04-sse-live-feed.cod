@@ -1,0 +1,35 @@
+# Server-Sent Events — Real-time live feed
+# Clients connect and receive live updates every second
+# codong run 04-sse-live-feed.cod
+
+server = web.serve(port: 3003)
+
+server.get("/", fn(req, res) {
+    res.html("""
+<!DOCTYPE html>
+<html>
+<body>
+  <h2>Codong Live Feed</h2>
+  <ul id="log"></ul>
+  <script>
+    const es = new EventSource('/feed');
+    es.onmessage = e => {
+      const li = document.createElement('li');
+      li.textContent = e.data;
+      document.getElementById('log').prepend(li);
+    };
+  </script>
+</body>
+</html>
+""")
+})
+
+server.sse("/feed", fn(req, stream) {
+    count = 0
+    loop {
+        count = count + 1
+        stream.send("update #{count} at {time.now().format('HH:mm:ss')}")
+        time.sleep(1000)
+        if count >= 60 { break }
+    }
+})

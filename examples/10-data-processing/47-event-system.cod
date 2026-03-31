@@ -1,0 +1,66 @@
+# Event System (Pub/Sub in-process)
+# Demonstrates closures, higher-order functions, and event-driven patterns
+# codong run 47-event-system.cod
+
+fn create_event_bus() {
+    handlers = {}
+
+    on = fn(event, handler) {
+        if !handlers.has(event) { handlers[event] = [] }
+        handlers[event].push(handler)
+    }
+
+    emit = fn(event, data) {
+        if !handlers.has(event) { return 0 }
+        event_handlers = handlers[event]
+        for h in event_handlers { h(data) }
+        return event_handlers.len()
+    }
+
+    off_all = fn(event) {
+        handlers[event] = []
+    }
+
+    return {on: on, emit: emit, off_all: off_all}
+}
+
+bus = create_event_bus()
+
+# Register listeners
+bus.on("user.created", fn(user) {
+    print("  [email service]  Send welcome email to {user.email}")
+})
+
+bus.on("user.created", fn(user) {
+    print("  [analytics]      Track new signup: {user.username}")
+})
+
+bus.on("user.created", fn(user) {
+    print("  [audit log]      User created: {user.id} at {time.now().format('HH:mm:ss')}")
+})
+
+bus.on("order.placed", fn(order) {
+    print("  [inventory]      Reserve {order.quantity}x {order.product}")
+})
+
+bus.on("order.placed", fn(order) {
+    print("  [billing]        Charge ${order.total} to {order.payment_method}")
+})
+
+# Emit events
+print("=== Event: user.created ===")
+count = bus.emit("user.created", {
+    id: 42, username: "alice", email: "alice@example.com"
+})
+print("  Handled by {count} listeners\n")
+
+print("=== Event: order.placed ===")
+count = bus.emit("order.placed", {
+    id: 1001, product: "Widget A", quantity: 3,
+    total: 29.97, payment_method: "card_****1234"
+})
+print("  Handled by {count} listeners\n")
+
+print("=== Event: unknown.event ===")
+count = bus.emit("unknown.event", {})
+print("  Handled by {count} listeners")

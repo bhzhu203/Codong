@@ -1,0 +1,71 @@
+# Sorting Algorithms
+# Bubble sort, merge sort, quicksort — pure Codong implementations
+# codong run 39-sorting-algorithms.cod
+
+fn bubble_sort(arr) {
+    n = arr.len()
+    i = 0
+    loop {
+        j = 0
+        loop {
+            if arr[j] > arr[j + 1] {
+                temp = arr[j]
+                arr[j] = arr[j + 1]
+                arr[j + 1] = temp
+            }
+            j = j + 1
+            if j >= n - i - 1 { break }
+        }
+        i = i + 1
+        if i >= n - 1 { break }
+    }
+    return arr
+}
+
+fn merge(left, right) {
+    result = []
+    li = 0
+    ri = 0
+    loop {
+        if li >= left.len() or ri >= right.len() { break }
+        if left[li] <= right[ri] {
+            result.push(left[li])
+            li = li + 1
+        } else {
+            result.push(right[ri])
+            ri = ri + 1
+        }
+    }
+    while li < left.len() { result.push(left[li]); li = li + 1 }
+    while ri < right.len() { result.push(right[ri]); ri = ri + 1 }
+    return result
+}
+
+fn merge_sort(arr) {
+    if arr.len() <= 1 { return arr }
+    mid = arr.len() / 2
+    left  = merge_sort(arr.slice(0, mid))
+    right = merge_sort(arr.slice(mid, arr.len()))
+    return merge(left, right)
+}
+
+fn quicksort(arr) {
+    if arr.len() <= 1 { return arr }
+    pivot = arr[arr.len() / 2]
+    left   = arr.filter(fn(x) => x < pivot)
+    middle = arr.filter(fn(x) => x == pivot)
+    right  = arr.filter(fn(x) => x > pivot)
+    return quicksort(left) + middle + quicksort(right)
+}
+
+data = [64, 34, 25, 12, 22, 11, 90, 43, 7, 55]
+print("Original : {data.join(', ')}")
+
+b = bubble_sort(data.slice(0, data.len()))
+print("Bubble   : {b.join(', ')}")
+
+m = merge_sort(data)
+print("Merge    : {m.join(', ')}")
+
+q = quicksort(data)
+print("Quicksort: {q.join(', ')}")

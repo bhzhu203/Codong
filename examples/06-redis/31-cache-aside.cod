@@ -1,0 +1,48 @@
+# Cache-Aside Pattern with Redis
+# Expensive DB queries cached automatically, singleflight prevents stampede
+# codong run 31-cache-aside.cod
+
+redis.connect("redis://localhost:6379")
+db.connect("sqlite:///products.db")
+
+db.query("CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY, name TEXT, price REAL)", [])
+if db.count("products", "1=1") == 0 {
+    db.batch_insert("products", [
+        {id:1, name:"Widget A", price:9.99},
+        {id:2, name:"Widget B", price:19.99},
+        {id:3, name:"Widget C", price:4.99}
+    ])
+}
+
+fn get_product(id) {
+    cache_key = "product:{id}"
+
+    result = redis.cache(cache_key, ttl: 60, fn() {
+        print("  [cache miss] loading product {id} from DB...")
+        time.sleep(50)  # simulate slow query
+        rows = db.query("SELECT * FROM products WHERE id = ?", [id])
+        if rows.len() == 0 { return null }
+        return rows[0]
+    })
+
+    return result
+}
+
+print("=== Cache-Aside Demo ===")
+print("First access (cache miss):")
+p1 = get_product(1)
+print("  {p1.name} — ${p1.price}")
+
+print("\nSecond access (cache hit):")
+p1b = get_product(1)
+print("  {p1b.name} — ${p1b.price}")
+
+print("\nDifferent product (cache miss):")
+p2 = get_product(2)
+print("  {p2.name} — ${p2.price}")
+
+print("\nAll cached, no more DB hits:")
+get_product(1)
+get_product(2)
+get_product(1)
+print("  Done.")

@@ -1,0 +1,33 @@
+# Static Site Server with API
+# Serves HTML files + JSON API on same port
+# codong run 08-static-site-server.cod
+
+server = web.serve(port: 3007)
+
+# Serve static files from ./public directory
+server.static("/", "./public")
+
+# API routes take priority
+server.get("/api/posts", fn(req, res) {
+    posts = [
+        {id: 1, title: "Getting started with Codong", date: "2026-03-01"},
+        {id: 2, title: "Building APIs in 10 lines", date: "2026-03-15"},
+        {id: 3, title: "Why AI loves Codong", date: "2026-03-28"}
+    ]
+    res.json({posts: posts})
+})
+
+server.get("/api/posts/:id", fn(req, res) {
+    id = int(req.param("id"))
+    res.json({
+        id: id,
+        title: "Post #{id}",
+        content: "This post was generated dynamically.",
+        date: time.now().format("YYYY-MM-DD")
+    })
+})
+
+# Health check
+server.get("/api/health", fn(req, res) {
+    res.json({status: "ok", uptime: time.now().unix()})
+})

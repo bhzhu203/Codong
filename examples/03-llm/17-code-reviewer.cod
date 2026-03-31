@@ -1,0 +1,44 @@
+# AI Code Reviewer API
+# POST code to /review, get structured feedback
+# codong run 17-code-reviewer.cod
+
+api_key = env.get("ANTHROPIC_API_KEY", "")
+server = web.serve(port: 3010)
+
+system_prompt = """You are an expert code reviewer. Analyze the submitted code and respond with JSON:
+{
+  "score": 0-10,
+  "issues": [{"severity": "error|warning|info", "line": N, "message": "..."}],
+  "suggestions": ["..."],
+  "summary": "one paragraph"
+}"""
+
+server.post("/review", fn(req, res) {
+    body = req.json()
+    code = body.code
+    language = body.language
+
+    if code == null or code == "" {
+        res.status(400).json({error: "code is required"})
+        return
+    }
+
+    response = llm.ask(
+        model: "claude-sonnet-4-6",
+        system: system_prompt,
+        prompt: "Language: {language}\n\nCode:\n```\n{code}\n```",
+        api_key: api_key,
+        max_tokens: 800
+    )
+
+    try {
+        result = json.parse(response.text)?
+        res.json(result)
+    } catch e {
+        res.json({summary: response.text, raw: true})
+    }
+})
+
+server.get("/health", fn(req, res) {
+    res.json({status: "ok", model: "claude-sonnet-4-6"})
+})

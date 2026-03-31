@@ -1,0 +1,54 @@
+# File Organizer
+# Scans a directory and sorts files into subdirectories by extension
+# codong run 21-file-organizer.cod
+
+source_dir = env.get("SOURCE_DIR", "./inbox")
+fs.mkdir(source_dir)
+
+# Create some sample files
+fs.write(source_dir + "/report.pdf", "PDF content")
+fs.write(source_dir + "/photo.jpg", "JPEG content")
+fs.write(source_dir + "/data.csv", "a,b,c")
+fs.write(source_dir + "/notes.txt", "some notes")
+fs.write(source_dir + "/archive.zip", "zip content")
+fs.write(source_dir + "/script.py", "print('hello')")
+
+type_map = {
+    "pdf":  "documents",
+    "doc":  "documents",
+    "docx": "documents",
+    "txt":  "documents",
+    "jpg":  "images",
+    "jpeg": "images",
+    "png":  "images",
+    "gif":  "images",
+    "csv":  "data",
+    "json": "data",
+    "xlsx": "data",
+    "zip":  "archives",
+    "tar":  "archives",
+    "gz":   "archives",
+    "py":   "code",
+    "js":   "code",
+    "go":   "code",
+    "cod":  "code"
+}
+
+files = fs.ls(source_dir)
+moved = 0
+
+for filename in files {
+    ext = fs.ext(filename).replace(".", "").lower()
+    category = type_map.get(ext, "other")
+
+    dest_dir = source_dir + "/" + category
+    fs.mkdir(dest_dir)
+
+    src = source_dir + "/" + filename
+    dst = dest_dir + "/" + filename
+    fs.move(src, dst)
+    print("  {filename} → {category}/")
+    moved = moved + 1
+}
+
+print("Organized {moved} files.")

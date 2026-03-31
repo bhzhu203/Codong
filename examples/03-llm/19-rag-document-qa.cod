@@ -1,0 +1,52 @@
+# RAG — Document Q&A API
+# Upload documents, ask questions against them
+# codong run 19-rag-document-qa.cod
+
+api_key = env.get("ANTHROPIC_API_KEY", "")
+db.connect("sqlite:///documents.db")
+db.query("CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT,
+    content TEXT,
+    uploaded_at TEXT
+)", [])
+
+server = web.serve(port: 3011)
+
+# Upload a document
+server.post("/documents", fn(req, res) {
+    file = req.file("document")
+    content = file.text
+    db.query("INSERT INTO documents (filename, content, uploaded_at) VALUES (?,?,?)",
+        [file.name, content, time.now().format("YYYY-MM-DD")])
+    count = db.count("documents", "1=1")
+    res.json({ok: true, total_documents: count})
+})
+
+# Ask a question
+server.post("/ask", fn(req, res) {
+    body = req.json()
+    question = body.question
+
+    docs = db.query("SELECT filename, content FROM documents", [])
+    if docs.len() == 0 {
+        res.status(400).json({error: "no documents uploaded yet"})
+        return
+    }
+
+    context = docs.map(fn(d) => "--- {d.filename} ---\n{d.content}").join("\n\n")
+
+    response = llm.ask(
+        model: "claude-sonnet-4-6",
+        system: "Answer questions using ONLY the provided documents. If the answer is not in the documents, say so.",
+        prompt: "Documents:\n{context}\n\nQuestion: {question}",
+        api_key: api_key,
+        max_tokens: 500
+    )
+
+    res.json({
+        answer: response.text,
+        sources: docs.map(fn(d) => d.filename),
+        tokens: response.usage.total_tokens
+    })
+})

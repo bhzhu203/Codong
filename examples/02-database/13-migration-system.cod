@@ -1,0 +1,45 @@
+# Database Migration System
+# Tracks which migrations have been applied, runs new ones in order
+# codong run 13-migration-system.cod
+
+db.connect("sqlite:///app.db")
+
+# Migration tracking table
+db.query("CREATE TABLE IF NOT EXISTS migrations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE,
+    applied_at TEXT
+)", [])
+
+fn applied(name) {
+    rows = db.query("SELECT 1 FROM migrations WHERE name = ?", [name])
+    return rows.len() > 0
+}
+
+fn run_migration(name, sql) {
+    if applied(name) {
+        print("  [skip] {name}")
+        return
+    }
+    db.query(sql, [])
+    db.query("INSERT INTO migrations (name, applied_at) VALUES (?, ?)",
+        [name, time.now().format("YYYY-MM-DD HH:mm:ss")])
+    print("  [ok]   {name}")
+}
+
+print("Running migrations...")
+
+run_migration("001_create_users",
+    "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)")
+
+run_migration("002_add_role_to_users",
+    "ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
+
+run_migration("003_create_sessions",
+    "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, user_id INTEGER, expires_at TEXT)")
+
+run_migration("004_create_audit_log",
+    "CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT, user_id INTEGER, created_at TEXT)")
+
+applied_list = db.query("SELECT name, applied_at FROM migrations ORDER BY id", [])
+print("Done. {applied_list.len()} migration(s) applied.")

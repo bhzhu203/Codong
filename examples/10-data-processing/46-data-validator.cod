@@ -1,0 +1,65 @@
+# Data Validator
+# Schema-based validation with detailed error reporting
+# codong run 46-data-validator.cod
+
+fn validate(data, schema) {
+    errors = []
+
+    for field in schema.keys() {
+        rules = schema[field]
+        value = data.get(field, null)
+
+        if rules.contains("required") and (value == null or value == "") {
+            errors.push("{field}: required field is missing")
+            continue
+        }
+        if value == null { continue }
+
+        if rules.contains("string") and type_of(value) != "string" {
+            errors.push("{field}: must be a string, got {type_of(value)}")
+        }
+        if rules.contains("number") and type_of(value) != "number" {
+            errors.push("{field}: must be a number")
+        }
+        if rules.contains("email") and !value.contains("@") {
+            errors.push("{field}: invalid email address")
+        }
+        if rules.contains("min_length:3") and value.len() < 3 {
+            errors.push("{field}: must be at least 3 characters")
+        }
+        if rules.contains("max_length:100") and value.len() > 100 {
+            errors.push("{field}: must be at most 100 characters")
+        }
+        if rules.contains("positive") and value <= 0 {
+            errors.push("{field}: must be a positive number")
+        }
+    }
+
+    return {valid: errors.len() == 0, errors: errors}
+}
+
+user_schema = {
+    name:  ["required", "string", "min_length:3", "max_length:100"],
+    email: ["required", "string", "email"],
+    age:   ["required", "number", "positive"]
+}
+
+test_cases = [
+    {name: "Alice Chen", email: "alice@example.com", age: 28},
+    {name: "Bo",         email: "not-an-email",      age: 25},
+    {name: "",           email: "",                  age: -5},
+    {name: "Carol",      email: "carol@test.com",    age: 32}
+]
+
+print("=== Validation Results ===")
+for data in test_cases {
+    result = validate(data, user_schema)
+    status = "✓ VALID"
+    if !result.valid { status = "✗ INVALID" }
+    print("\n{status}: {json.stringify(data)}")
+    if !result.valid {
+        for err in result.errors {
+            print("  → {err}")
+        }
+    }
+}

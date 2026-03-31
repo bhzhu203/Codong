@@ -1,0 +1,60 @@
+# Role-Based Access Control (RBAC) System
+# Define roles, assign permissions, enforce at route level
+# codong run 37-rbac-permission-system.cod
+
+# Define roles and permissions
+oauth.rbac.define("admin",  ["read", "write", "delete", "manage_users"])
+oauth.rbac.define("editor", ["read", "write"])
+oauth.rbac.define("viewer", ["read"])
+
+# Assign users to roles
+oauth.rbac.assign("alice", "admin")
+oauth.rbac.assign("bob",   "editor")
+oauth.rbac.assign("carol", "viewer")
+oauth.rbac.assign("dave",  "viewer")
+
+fn can(user, permission) {
+    return oauth.rbac.check(user, permission)
+}
+
+# Demo permission checks
+users = ["alice", "bob", "carol", "dave"]
+actions = ["read", "write", "delete", "manage_users"]
+
+print("=== Permission Matrix ===")
+header = "User        " + actions.join("  ")
+print(header)
+
+for user in users {
+    row = user.pad_end(12, " ")
+    for action in actions {
+        allowed = can(user, action)
+        icon = "✓"
+        if !allowed { icon = "✗" }
+        row = row + icon.pad_end(action.len() + 2, " ")
+    }
+    print(row)
+}
+
+# API with RBAC enforcement
+server = web.serve(port: 3014)
+
+fn require_permission(permission, handler) {
+    return fn(req, res) {
+        user = req.header("X-User")
+        if user == "" {
+            res.status(401).json({error: "authentication required"})
+            return
+        }
+        if !can(user, permission) {
+            res.status(403).json({error: "forbidden: need '{permission}' permission"})
+            return
+        }
+        handler(req, res)
+    }
+}
+
+server.get("/posts",    require_permission("read",   fn(req, res) { res.json({posts: []}) }))
+server.post("/posts",   require_permission("write",  fn(req, res) { res.json({ok: true}) }))
+server.delete("/posts", require_permission("delete", fn(req, res) { res.json({ok: true}) }))
+server.get("/admin",    require_permission("manage_users", fn(req, res) { res.json({users: []}) }))

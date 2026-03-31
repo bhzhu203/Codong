@@ -1,0 +1,56 @@
+# Session Manager with Redis
+# Create, read, refresh, and destroy sessions
+# codong run 29-session-manager.cod
+
+redis.connect("redis://localhost:6379")
+
+SESSION_TTL = 3600  # 1 hour in seconds
+
+fn create_session(user_id, username) {
+    session_id = oauth.random_token(32)
+    session_data = {
+        user_id: user_id,
+        username: username,
+        created_at: time.now().format("YYYY-MM-DD HH:mm:ss"),
+        last_active: time.now().unix()
+    }
+    redis.set("session:{session_id}", json.stringify(session_data), ttl: SESSION_TTL)
+    return session_id
+}
+
+fn get_session(session_id) {
+    raw = redis.get("session:{session_id}")
+    if raw == null { return null }
+    return json.parse(raw)
+}
+
+fn refresh_session(session_id) {
+    raw = redis.get("session:{session_id}")
+    if raw == null { return false }
+    data = json.parse(raw)
+    data.last_active = time.now().unix()
+    redis.set("session:{session_id}", json.stringify(data), ttl: SESSION_TTL)
+    return true
+}
+
+fn destroy_session(session_id) {
+    redis.delete("session:{session_id}")
+}
+
+# Demo
+print("Creating sessions...")
+sid1 = create_session(1, "alice")
+sid2 = create_session(2, "bob")
+print("  Alice session: {sid1}")
+print("  Bob session  : {sid2}")
+
+session = get_session(sid1)
+print("\nAlice session data:")
+print("  user: {session.username}, created: {session.created_at}")
+
+refreshed = refresh_session(sid1)
+print("Session refreshed: {refreshed}")
+
+destroy_session(sid2)
+gone = get_session(sid2)
+print("Bob session after destroy: {gone}")

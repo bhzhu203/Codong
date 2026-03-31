@@ -1,0 +1,51 @@
+# Directory Backup Tool
+# Backs up a source directory with timestamp, keeps last N backups
+# codong run 24-backup-tool.cod
+
+source     = env.get("BACKUP_SOURCE", "./data")
+backup_dir = env.get("BACKUP_DIR", "./backups")
+keep_count = int(env.get("BACKUP_KEEP", "5"))
+
+# Create sample data to back up
+fs.mkdir(source)
+fs.write(source + "/users.json", json.stringify([{id:1,name:"Alice"},{id:2,name:"Bob"}]))
+fs.write(source + "/config.json", json.stringify({version:"1.0",debug:false}))
+fs.write(source + "/readme.txt", "Application data directory")
+
+fn do_backup() {
+    timestamp = time.now().format("YYYY-MM-DD_HH-mm-ss")
+    dest = backup_dir + "/backup_" + timestamp
+
+    fs.mkdir(backup_dir)
+    fs.mkdir(dest)
+
+    files = fs.ls(source)
+    for filename in files {
+        src_path = source + "/" + filename
+        dst_path = dest + "/" + filename
+        content = fs.read(src_path)
+        if content != null {
+            fs.write(dst_path, content)
+        }
+    }
+
+    print("Backup created: {dest} ({files.len()} files)")
+    return dest
+}
+
+fn cleanup_old_backups() {
+    if !fs.is_dir(backup_dir) { return }
+    backups = fs.ls(backup_dir).filter(fn(f) => f.starts_with("backup_"))
+    backups = sort(backups)
+    while backups.len() > keep_count {
+        old = backup_dir + "/" + backups[0]
+        print("Removing old backup: {old}")
+        backups.shift()
+    }
+}
+
+dest = do_backup()
+cleanup_old_backups()
+
+all_backups = fs.ls(backup_dir)
+print("Total backups stored: {all_backups.len()}")

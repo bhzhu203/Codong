@@ -1,0 +1,40 @@
+# Distributed Lock with Redis
+# Prevents concurrent execution of critical sections
+# codong run 32-distributed-lock.cod
+
+redis.connect("redis://localhost:6379")
+
+fn process_payment(payment_id, amount) {
+    lock_key = "lock:payment:{payment_id}"
+
+    acquired = redis.lock(lock_key, ttl: 30)
+    if !acquired {
+        print("  Payment {payment_id}: could not acquire lock — already processing")
+        return false
+    }
+
+    try {
+        print("  Payment {payment_id}: processing ${amount}...")
+        time.sleep(100)  # simulate payment processing
+        print("  Payment {payment_id}: complete")
+        return true
+    } catch e {
+        print("  Payment {payment_id}: error — {e.message}")
+        return false
+    } finally {
+        redis.unlock(lock_key)
+        print("  Payment {payment_id}: lock released")
+    }
+}
+
+fn try_double_charge(payment_id, amount) {
+    print("Attempting to charge payment {payment_id} twice simultaneously:")
+    result1 = process_payment(payment_id, amount)
+    result2 = process_payment(payment_id, amount)
+    print("  Attempt 1: {result1}")
+    print("  Attempt 2: {result2}")
+}
+
+try_double_charge("PAY-001", 99.99)
+print("")
+process_payment("PAY-002", 49.99)

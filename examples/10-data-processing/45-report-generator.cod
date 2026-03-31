@@ -1,0 +1,79 @@
+# Report Generator
+# Generates a formatted HTML and JSON report from sales data
+# codong run 45-report-generator.cod
+
+db.connect("sqlite:///sales.db")
+
+db.query("CREATE TABLE IF NOT EXISTS sales (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    product TEXT, region TEXT, quarter INTEGER,
+    revenue REAL, units INTEGER, date TEXT
+)", [])
+
+if db.count("sales", "1=1") == 0 {
+    records = [
+        {product:"Widget A", region:"North", quarter:1, revenue:15200.0, units:152, date:"2026-01-15"},
+        {product:"Widget B", region:"South", quarter:1, revenue:28900.0, units:98,  date:"2026-01-20"},
+        {product:"Widget A", region:"East",  quarter:1, revenue:12400.0, units:124, date:"2026-02-01"},
+        {product:"Widget C", region:"North", quarter:2, revenue:45000.0, units:180, date:"2026-04-10"},
+        {product:"Widget B", region:"East",  quarter:2, revenue:31200.0, units:104, date:"2026-05-15"},
+        {product:"Widget A", region:"South", quarter:2, revenue:19800.0, units:198, date:"2026-06-01"}
+    ]
+    db.batch_insert("sales", records)
+}
+
+total_revenue = db.sum("sales", "revenue", "1=1")
+total_units   = db.sum("sales", "units",   "1=1")
+avg_order     = db.avg("sales", "revenue",  "1=1")
+best_revenue  = db.max("sales", "revenue",  "1=1")
+
+all_sales = db.query("SELECT * FROM sales ORDER BY revenue DESC", [])
+
+report = {
+    generated_at: time.now().format("YYYY-MM-DD HH:mm:ss"),
+    period: "2026 H1",
+    summary: {
+        total_revenue: total_revenue,
+        total_units:   total_units,
+        avg_order_value: avg_order,
+        best_single_sale: best_revenue,
+        total_transactions: all_sales.len()
+    },
+    top_sales: all_sales.slice(0, 3),
+    all_sales: all_sales
+}
+
+# JSON report
+fs.write("./report.json", json.pretty(report))
+print("JSON report: ./report.json")
+
+# HTML report
+html = """<!DOCTYPE html>
+<html>
+<head><title>Sales Report 2026 H1</title>
+<style>body{font-family:sans-serif;max-width:800px;margin:40px auto}
+table{width:100%;border-collapse:collapse}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid #ddd}
+th{background:#f5f5f5}</style></head>
+<body>
+<h1>Sales Report — 2026 H1</h1>
+<p>Generated: {report.generated_at}</p>
+<h2>Summary</h2>
+<table>
+<tr><th>Metric</th><th>Value</th></tr>
+<tr><td>Total Revenue</td><td>${total_revenue}</td></tr>
+<tr><td>Total Units</td><td>{total_units}</td></tr>
+<tr><td>Avg Order Value</td><td>${avg_order}</td></tr>
+<tr><td>Transactions</td><td>{all_sales.len()}</td></tr>
+</table>
+<h2>All Transactions</h2>
+<table>
+<tr><th>Product</th><th>Region</th><th>Q</th><th>Revenue</th><th>Units</th></tr>"""
+
+for s in all_sales {
+    html = html + "<tr><td>{s.product}</td><td>{s.region}</td><td>{s.quarter}</td><td>${s.revenue}</td><td>{s.units}</td></tr>"
+}
+
+html = html + "</table></body></html>"
+fs.write("./report.html", html)
+print("HTML report: ./report.html")

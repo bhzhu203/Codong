@@ -1,0 +1,49 @@
+# Batch Watermark Processor
+# Adds text or tiled watermarks to all images in a directory
+# codong run 34-watermark-batch.cod
+
+input_dir  = env.get("INPUT_DIR",  "./photos")
+output_dir = env.get("OUTPUT_DIR", "./watermarked")
+wm_text    = env.get("WATERMARK",  "© Codong 2026")
+
+fs.mkdir(input_dir)
+fs.mkdir(output_dir)
+
+# Create sample images to process
+fn create_sample_image(path, w, h, color) {
+    img = image.create(w, h, color)
+    image.save(img, path)
+}
+
+create_sample_image(input_dir + "/photo1.png", 800, 600, "#4A90D9")
+create_sample_image(input_dir + "/photo2.png", 1024, 768, "#E8A838")
+create_sample_image(input_dir + "/photo3.png", 640, 480, "#5BA85B")
+
+image_exts = ["jpg", "jpeg", "png", "webp"]
+files = fs.ls(input_dir).filter(fn(f) {
+    ext = fs.ext(f).replace(".", "").lower()
+    return image_exts.contains(ext)
+})
+
+print("Processing {files.len()} images with watermark: '{wm_text}'")
+
+processed = 0
+for filename in files {
+    src = input_dir + "/" + filename
+    dst = output_dir + "/" + filename
+
+    img = image.open(src)
+    watermarked = image.watermark(img, wm_text,
+        position: "bottom_right",
+        opacity: 0.7,
+        size: 18
+    )
+    image.save(watermarked, dst)
+
+    w = image.width(img)
+    h = image.height(img)
+    print("  {filename} ({w}x{h}) → {dst}")
+    processed = processed + 1
+}
+
+print("Done. {processed} images watermarked.")

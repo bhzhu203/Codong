@@ -1,0 +1,46 @@
+# Image Resizer Service
+# API that accepts image uploads and returns resized versions
+# codong run 33-image-resizer-service.cod
+
+fs.mkdir("./processed")
+server = web.serve(port: 3012)
+
+SIZES = {
+    thumb:  {w: 150,  h: 150},
+    small:  {w: 320,  h: 240},
+    medium: {w: 800,  h: 600},
+    large:  {w: 1920, h: 1080}
+}
+
+server.post("/resize", fn(req, res) {
+    file = req.file("image")
+    size = req.query("size")
+
+    if file == null {
+        res.status(400).json({error: "no image file provided"})
+        return
+    }
+
+    dims = SIZES.get(size, SIZES.medium)
+    tmp = "/tmp/upload_" + time.now().unix().str()
+    fs.write(tmp, file.bytes)
+
+    img = image.open(tmp)
+    original_w = image.width(img)
+    original_h = image.height(img)
+
+    resized = image.resize(img, dims.w, dims.h, fit: true)
+
+    out_name = "processed/{time.now().unix()}_{size}_{file.name}"
+    image.save(resized, out_name)
+
+    res.json({
+        ok: true,
+        original:  {w: original_w, h: original_h, size_bytes: file.size},
+        output:    {w: dims.w, h: dims.h, path: out_name, size: size}
+    })
+})
+
+server.get("/sizes", fn(req, res) {
+    res.json(SIZES)
+})

@@ -1,0 +1,76 @@
+# CSV Processor
+# Parse CSV → transform → filter → aggregate → export
+# codong run 43-csv-processor.cod
+
+csv_data = """id,name,department,salary,start_date
+1,Alice,Engineering,95000,2022-03-15
+2,Bob,Marketing,72000,2021-07-01
+3,Carol,Engineering,105000,2020-01-10
+4,Dave,HR,68000,2023-05-20
+5,Eve,Engineering,115000,2019-11-30
+6,Frank,Marketing,78000,2022-08-15
+7,Grace,HR,71000,2021-03-01
+8,Hank,Engineering,98000,2020-06-15"""
+
+fn parse_csv(text) {
+    lines = text.trim().split("\n")
+    headers = lines[0].split(",")
+    rows = []
+    i = 1
+    loop {
+        if i >= lines.len() { break }
+        values = lines[i].split(",")
+        row = {}
+        j = 0
+        for header in headers {
+            row[header.trim()] = values[j].trim()
+            j = j + 1
+        }
+        rows.push(row)
+        i = i + 1
+    }
+    return rows
+}
+
+employees = parse_csv(csv_data)
+employees = employees.map(fn(e) {
+    e.salary = int(e.salary)
+    return e
+})
+
+# Department breakdown
+departments = {}
+for emp in employees {
+    dept = emp.department
+    if !departments.has(dept) {
+        departments[dept] = {count: 0, total_salary: 0, employees: []}
+    }
+    departments[dept].count = departments[dept].count + 1
+    departments[dept].total_salary = departments[dept].total_salary + emp.salary
+    departments[dept].employees.push(emp.name)
+}
+
+print("=== Department Report ===")
+for dept in departments.keys() {
+    d = departments[dept]
+    avg = d.total_salary / d.count
+    print("{dept}:")
+    print("  Headcount : {d.count}")
+    print("  Avg salary: ${avg}")
+    print("  Staff     : {d.employees.join(', ')}")
+}
+
+# Top earners
+sorted_emps = sort(employees, fn(a, b) => a.salary < b.salary)
+print("\nTop 3 earners:")
+i = 0
+for emp in sorted_emps {
+    if i >= 3 { break }
+    print("  {emp.name} ({emp.department}): ${emp.salary}")
+    i = i + 1
+}
+
+# Export filtered data
+engineering = employees.filter(fn(e) => e.department == "Engineering")
+fs.write("./engineering.json", json.pretty(engineering))
+print("\nEngineering team exported to engineering.json")

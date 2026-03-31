@@ -1,0 +1,43 @@
+# JWT Authentication API
+# Login → get token → access protected routes
+# codong run 06-jwt-auth-api.cod
+
+db.connect("sqlite:///auth.db")
+db.query("CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE,
+    password TEXT
+)", [])
+db.query("INSERT OR IGNORE INTO users (username, password) VALUES (?, ?)",
+    ["admin", "secret123"])
+
+server = web.serve(port: 3005)
+jwt_secret = env.get("JWT_SECRET", "codong-default-secret")
+
+# Login
+server.post("/login", fn(req, res) {
+    body = req.json()
+    rows = db.query("SELECT * FROM users WHERE username = ? AND password = ?",
+        [body.username, body.password])
+    if rows.len() == 0 {
+        res.status(401).json({error: "invalid credentials"})
+        return
+    }
+    token = oauth.jwt.sign({user_id: rows[0].id, username: rows[0].username},
+        secret: jwt_secret, expires_in: 3600)
+    res.json({token: token})
+})
+
+# Protected route
+auth = oauth.jwt.middleware(secret: jwt_secret)
+server.use("/me", auth)
+server.use("/admin", auth)
+
+server.get("/me", fn(req, res) {
+    res.json({user: req.user, message: "authenticated"})
+})
+
+server.get("/admin/dashboard", fn(req, res) {
+    users = db.query("SELECT id, username FROM users", [])
+    res.json({users: users})
+})

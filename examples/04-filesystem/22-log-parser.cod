@@ -1,0 +1,67 @@
+# Log Parser & Analyzer
+# Parses access logs, counts errors, extracts top IPs
+# codong run 22-log-parser.cod
+
+log_file = env.get("LOG_FILE", "./access.log")
+
+# Generate sample log data
+sample_log = """192.168.1.1 GET /api/users 200 45ms
+10.0.0.5 POST /api/login 200 120ms
+192.168.1.1 GET /api/posts 200 33ms
+10.0.0.9 GET /api/missing 404 5ms
+192.168.1.1 DELETE /api/posts/1 403 8ms
+10.0.0.5 GET /api/users 200 42ms
+10.0.0.9 POST /api/data 500 299ms
+192.168.1.1 GET /api/users 200 51ms
+10.0.0.5 GET /api/health 200 2ms
+10.0.0.9 GET /api/crash 500 1200ms"""
+
+fs.write(log_file, sample_log)
+
+lines = fs.read_lines(log_file)
+stats = {total: 0, errors_4xx: 0, errors_5xx: 0, ok: 0}
+ip_counts = {}
+slow_requests = []
+
+for line in lines {
+    if line.trim() == "" { continue }
+    parts = line.split(" ")
+    if parts.len() < 5 { continue }
+
+    ip     = parts[0]
+    method = parts[1]
+    path   = parts[2]
+    status = int(parts[3])
+    time_s = parts[4]
+
+    stats.total = stats.total + 1
+
+    if status >= 500 {
+        stats.errors_5xx = stats.errors_5xx + 1
+    } else if status >= 400 {
+        stats.errors_4xx = stats.errors_4xx + 1
+    } else {
+        stats.ok = stats.ok + 1
+    }
+
+    ip_counts[ip] = ip_counts.get(ip, 0) + 1
+
+    ms = int(time_s.replace("ms", ""))
+    if ms > 200 {
+        slow_requests.push("{method} {path} — {ms}ms")
+    }
+}
+
+print("=== Log Analysis ===")
+print("Total requests: {stats.total}")
+print("OK (2xx):       {stats.ok}")
+print("Client errors:  {stats.errors_4xx}")
+print("Server errors:  {stats.errors_5xx}")
+print("\nTop IPs:")
+for ip in ip_counts.keys() {
+    print("  {ip}: {ip_counts[ip]} requests")
+}
+print("\nSlow requests (>200ms):")
+for r in slow_requests {
+    print("  {r}")
+}

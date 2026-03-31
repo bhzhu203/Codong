@@ -1,0 +1,38 @@
+# CORS + Middleware Chain
+# Shows how to compose multiple middleware layers
+# codong run 09-cors-middleware.cod
+
+server = web.serve(port: 3008)
+
+# CORS middleware — allow all origins in dev
+server.use(web.cors(
+    origins: ["http://localhost:5173", "https://codong.org"],
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    headers: ["Authorization", "Content-Type"]
+))
+
+# Request logger middleware
+server.use(fn(req, res, next) {
+    start = time.now().unix()
+    next()
+    elapsed = time.now().unix() - start
+    print("[{req.method}] {req.path} {elapsed}ms")
+})
+
+# API key check middleware for /private routes
+server.use("/private", fn(req, res, next) {
+    key = req.header("X-API-Key")
+    if key != env.get("API_KEY", "dev-key-123") {
+        res.status(401).json({error: "invalid API key"})
+        return
+    }
+    next()
+})
+
+server.get("/public/data", fn(req, res) {
+    res.json({data: "public data, no auth needed"})
+})
+
+server.get("/private/data", fn(req, res) {
+    res.json({data: "secret data", access: "authorized"})
+})

@@ -1,0 +1,54 @@
+# Service Health Checker
+# Monitors a list of endpoints, logs status to file
+# codong run 27-health-checker.cod
+
+endpoints = [
+    {name: "Codong Website", url: "https://codong.org"},
+    {name: "GitHub API",     url: "https://api.github.com"},
+    {name: "Open-Meteo",     url: "https://api.open-meteo.com/v1/forecast?latitude=0&longitude=0"},
+    {name: "Httpbin",        url: "https://httpbin.org/get"}
+]
+
+results = []
+
+print("=== Health Check {time.now().format('YYYY-MM-DD HH:mm:ss')} ===\n")
+
+for ep in endpoints {
+    start = time.now().unix()
+    status = "unknown"
+    code = 0
+
+    try {
+        resp = http.get(ep.url, timeout: 5000)?
+        code = resp.status
+        status = "up"
+    } catch e {
+        status = "down"
+        code = 0
+    }
+
+    elapsed = time.now().unix() - start
+    icon = "✓"
+    if status == "down" { icon = "✗" }
+
+    print("{icon} {ep.name}")
+    print("  Status: {status} (HTTP {code}) — {elapsed}ms")
+
+    results.push({
+        name: ep.name,
+        url: ep.url,
+        status: status,
+        code: code,
+        latency_ms: elapsed,
+        checked_at: time.now().format("YYYY-MM-DD HH:mm:ss")
+    })
+}
+
+down_count = results.filter(fn(r) => r.status == "down").len()
+print("\n{results.len()} checked, {down_count} down")
+
+fs.mkdir("./health-logs")
+log_path = "./health-logs/" + time.now().format("YYYY-MM-DD") + ".jsonl"
+existing = fs.read(log_path)
+if existing == null { existing = "" }
+fs.write(log_path, existing + json.stringify({run: results}) + "\n")

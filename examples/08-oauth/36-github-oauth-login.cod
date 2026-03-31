@@ -1,0 +1,63 @@
+# GitHub OAuth Login Flow
+# Complete web app with GitHub SSO, user profile, session
+# codong run 36-github-oauth-login.cod
+
+client_id     = env.get("GITHUB_CLIENT_ID", "")
+client_secret = env.get("GITHUB_CLIENT_SECRET", "")
+jwt_secret    = env.get("JWT_SECRET", "dev-secret-key")
+
+redis.connect("redis://localhost:6379")
+db.connect("sqlite:///oauth_users.db")
+db.query("CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    github_id TEXT UNIQUE,
+    username TEXT,
+    avatar_url TEXT,
+    email TEXT,
+    created_at TEXT
+)", [])
+
+server = web.serve(port: 3013)
+
+server.get("/", fn(req, res) {
+    res.html("""
+<html><body>
+  <h2>Codong OAuth Demo</h2>
+  <a href="/auth/github">Login with GitHub</a>
+</body></html>""")
+})
+
+server.get("/auth/github", fn(req, res) {
+    redirect_url = oauth.github.authorize(
+        client_id: client_id,
+        scope: "user:email"
+    )
+    res.redirect(redirect_url)
+})
+
+server.get("/auth/github/callback", fn(req, res) {
+    code = req.query("code")
+    token_resp = oauth.github.token(code,
+        client_id: client_id, client_secret: client_secret)
+
+    user_resp = http.get("https://api.github.com/user",
+        headers: {Authorization: "token {token_resp.access_token}"})
+    gh_user = user_resp.json
+
+    db.query("INSERT OR REPLACE INTO users (github_id, username, avatar_url, created_at) VALUES (?,?,?,?)",
+        [str(gh_user.id), gh_user.login, gh_user.avatar_url, time.now().format("YYYY-MM-DD")])
+
+    rows = db.query("SELECT * FROM users WHERE github_id = ?", [str(gh_user.id)])
+    jwt = oauth.jwt.sign({user_id: rows[0].id, username: rows[0].username}, secret: jwt_secret, expires_in: 86400)
+
+    res.cookie("token", jwt, http_only: true)
+    res.redirect("/profile")
+})
+
+auth_mid = oauth.jwt.middleware(secret: jwt_secret)
+server.use("/profile", auth_mid)
+
+server.get("/profile", fn(req, res) {
+    rows = db.query("SELECT * FROM users WHERE id = ?", [req.user.user_id])
+    res.json(rows[0])
+})

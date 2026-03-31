@@ -1,0 +1,28 @@
+# Simple AI Chat
+# Single-turn question & answer with Claude
+# codong run 15-simple-chat.cod
+# Requires: ANTHROPIC_API_KEY env variable
+
+api_key = env.get("ANTHROPIC_API_KEY", "")
+if api_key == "" {
+    print("Error: set ANTHROPIC_API_KEY environment variable")
+    return
+}
+
+questions = [
+    "What is Codong programming language?",
+    "Write a function to check if a number is prime in Codong",
+    "What are the benefits of AI-native programming languages?"
+]
+
+for question in questions {
+    print("\nQ: {question}")
+    response = llm.ask(
+        model: "claude-sonnet-4-6",
+        prompt: question,
+        api_key: api_key,
+        max_tokens: 200
+    )
+    print("A: {response.text}")
+    print("   (tokens used: {response.usage.total_tokens})")
+}

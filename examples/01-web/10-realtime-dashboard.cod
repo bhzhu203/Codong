@@ -1,0 +1,44 @@
+# Real-time System Dashboard
+# Streams server metrics to browser via SSE
+# codong run 10-realtime-dashboard.cod
+
+redis.connect("redis://localhost:6379")
+server = web.serve(port: 3009)
+
+# Increment request counter
+req_count = 0
+server.use(fn(req, res, next) {
+    req_count = req_count + 1
+    redis.incr("dashboard:requests")
+    next()
+})
+
+server.get("/", fn(req, res) {
+    res.html("""
+<!DOCTYPE html>
+<html>
+<head><title>Codong Dashboard</title></head>
+<body style="font-family:monospace;padding:20px">
+  <h2>Live Dashboard</h2>
+  <pre id="stats">connecting...</pre>
+  <script>
+    const es = new EventSource('/metrics');
+    es.onmessage = e => document.getElementById('stats').textContent = e.data;
+  </script>
+</body>
+</html>
+""")
+})
+
+server.sse("/metrics", fn(req, stream) {
+    loop {
+        total = redis.get("dashboard:requests")
+        stats = {
+            requests: total,
+            time: time.now().format("HH:mm:ss"),
+            uptime_sec: time.now().unix()
+        }
+        stream.send(json.stringify(stats))
+        time.sleep(2000)
+    }
+})

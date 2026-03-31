@@ -1,0 +1,49 @@
+# HTTP Client with Retry & Error Handling
+# Shows all HTTP methods and structured error handling
+# codong run 28-http-retry-client.cod
+
+base_url = "https://jsonplaceholder.typicode.com"
+
+fn fetch_with_retry(method, url, body, max_retries) {
+    attempt = 0
+    loop {
+        attempt = attempt + 1
+        try {
+            resp = null
+            if method == "GET"    { resp = http.get(url)? }
+            if method == "POST"   { resp = http.post(url, body)? }
+            if method == "PUT"    { resp = http.put(url, body)? }
+            if method == "PATCH"  { resp = http.patch(url, body)? }
+            if method == "DELETE" { resp = http.delete(url)? }
+            return resp
+        } catch e {
+            if attempt >= max_retries or !e.retry {
+                print("  Failed after {attempt} attempts: {e.message}")
+                return null
+            }
+            print("  Attempt {attempt} failed, retrying...")
+            time.sleep(500 * attempt)
+        }
+    }
+}
+
+# GET
+print("GET /posts/1")
+r = fetch_with_retry("GET", base_url + "/posts/1", null, 3)
+if r != null { print("  title: {r.json.title}") }
+
+# POST
+print("POST /posts")
+new_post = {title: "Codong Post", body: "AI-native content", userId: 1}
+r = fetch_with_retry("POST", base_url + "/posts", new_post, 3)
+if r != null { print("  created id: {r.json.id}") }
+
+# PUT
+print("PUT /posts/1")
+r = fetch_with_retry("PUT", base_url + "/posts/1", {title: "Updated"}, 3)
+if r != null { print("  status: {r.status}") }
+
+# DELETE
+print("DELETE /posts/1")
+r = fetch_with_retry("DELETE", base_url + "/posts/1", null, 3)
+if r != null { print("  status: {r.status}") }

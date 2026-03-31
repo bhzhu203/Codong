@@ -1,0 +1,45 @@
+# Blog System with SQLite
+# Posts, tags, full-text search
+# codong run 11-blog-system.cod
+
+db.connect("sqlite:///blog.db")
+
+db.query("CREATE TABLE IF NOT EXISTS posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    content TEXT,
+    tags TEXT,
+    published INTEGER DEFAULT 0,
+    created_at TEXT
+)", [])
+
+# Insert sample data
+fn seed() {
+    count = db.count("posts", "1=1")
+    if count > 0 { return }
+    posts = [
+        {title: "Hello Codong", content: "First post content", tags: "intro,beginner", published: 1},
+        {title: "Web APIs in 10 lines", content: "Here is how...", tags: "web,api", published: 1},
+        {title: "Draft: AI integration", content: "Work in progress", tags: "ai,llm", published: 0}
+    ]
+    for post in posts {
+        db.query("INSERT INTO posts (title, content, tags, published, created_at) VALUES (?,?,?,?,?)",
+            [post.title, post.content, post.tags, post.published,
+             time.now().format("YYYY-MM-DD")])
+    }
+    print("Seeded {posts.len()} posts")
+}
+
+seed()
+
+# Published posts
+published = db.query("SELECT id, title, tags, created_at FROM posts WHERE published = 1", [])
+print("Published posts: {published.len()}")
+for p in published {
+    print("  [{p.id}] {p.title} — tags: {p.tags}")
+}
+
+# Stats
+total = db.count("posts", "1=1")
+pub = db.count("posts", "published = 1")
+print("Total: {total}, Published: {pub}, Drafts: {total - pub}")

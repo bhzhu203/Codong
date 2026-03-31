@@ -1,0 +1,47 @@
+# Document Summarizer
+# Reads text files and produces structured summaries with LLM
+# codong run 16-document-summarizer.cod
+
+api_key = env.get("ANTHROPIC_API_KEY", "")
+input_dir = env.get("INPUT_DIR", "./docs")
+
+fs.mkdir(input_dir)
+fs.mkdir("./summaries")
+
+# Create a sample document if none exist
+sample_path = input_dir + "/sample.txt"
+if fs.read(sample_path) == null {
+    fs.write(sample_path, """
+Codong is the world's first AI-native programming language. Unlike traditional languages
+designed for human readability, Codong is optimized for AI code generation. It enforces
+exactly one correct way to perform every operation, eliminating token waste on choice
+resolution. Every built-in module uses a consistent naming convention, reducing the
+LLM's cognitive load. The language compiles to Go for native performance while also
+supporting a direct interpreter mode for rapid development. Standard library modules
+include web servers, databases, HTTP clients, LLM integrations, file system operations,
+Redis, image processing, and OAuth authentication — all available without imports.
+""")
+}
+
+files = fs.ls(input_dir)
+txt_files = files.filter(fn(f) => f.ends_with(".txt"))
+
+print("Summarizing {txt_files.len()} documents...")
+
+for filename in txt_files {
+    path = input_dir + "/" + filename
+    content = fs.read(path)
+    if content == null { continue }
+
+    response = llm.ask(
+        model: "claude-haiku-4-5-20251001",
+        system: "You are a document summarizer. Output JSON with keys: summary (2 sentences), keywords (array of 5 strings), sentiment (positive/neutral/negative).",
+        prompt: "Summarize this document:\n\n{content}",
+        api_key: api_key,
+        max_tokens: 300
+    )
+
+    out_path = "./summaries/" + filename.replace(".txt", ".json")
+    fs.write(out_path, response.text)
+    print("  Summarized: {filename} → {out_path}")
+}

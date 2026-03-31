@@ -1,0 +1,35 @@
+# Weather API Client
+# Fetches current weather and 3-day forecast using Open-Meteo (free, no key needed)
+# codong run 25-weather-api-client.cod
+
+fn get_weather(lat, lon, city) {
+    url = "https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,wind_speed_10m,weathercode&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=3"
+
+    resp = http.get(url)
+    if !resp.ok {
+        print("Failed to fetch weather for {city}")
+        return null
+    }
+
+    data = resp.json
+    current = data.current
+    daily   = data.daily
+
+    print("=== Weather for {city} ===")
+    print("Current temp : {current.temperature_2m}°C")
+    print("Wind speed   : {current.wind_speed_10m} km/h")
+
+    print("3-day forecast:")
+    i = 0
+    for date in daily.time {
+        hi = daily.temperature_2m_max[i]
+        lo = daily.temperature_2m_min[i]
+        print("  {date}  High: {hi}°C  Low: {lo}°C")
+        i = i + 1
+    }
+    print("")
+}
+
+get_weather(51.5074, -0.1278, "London")
+get_weather(35.6762, 139.6503, "Tokyo")
+get_weather(40.7128, -74.0060, "New York")

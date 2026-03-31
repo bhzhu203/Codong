@@ -1,0 +1,42 @@
+# Webhook Receiver
+# Receives GitHub webhooks, logs to file, triggers actions
+# codong run 07-webhook-receiver.cod
+
+fs.mkdir("./webhook-logs")
+server = web.serve(port: 3006)
+
+server.post("/webhook/github", fn(req, res) {
+    event = req.header("X-GitHub-Event")
+    payload = req.json()
+
+    log_entry = {
+        event: event,
+        repo: payload.repository.full_name,
+        sender: payload.sender.login,
+        time: time.now().format("YYYY-MM-DD HH:mm:ss")
+    }
+
+    # Append to daily log file
+    log_file = "./webhook-logs/" + time.now().format("YYYY-MM-DD") + ".jsonl"
+    existing = fs.read(log_file)
+    if existing == null { existing = "" }
+    fs.write(log_file, existing + json.stringify(log_entry) + "\n")
+
+    # Handle specific events
+    if event == "push" {
+        branch = payload.ref.replace("refs/heads/", "")
+        print("Push to {branch} by {payload.sender.login}")
+    }
+    if event == "pull_request" {
+        action = payload.action
+        title = payload.pull_request.title
+        print("PR [{action}]: {title}")
+    }
+
+    res.json({received: true, event: event})
+})
+
+server.get("/webhook/logs", fn(req, res) {
+    files = fs.ls("./webhook-logs")
+    res.json({files: files})
+})

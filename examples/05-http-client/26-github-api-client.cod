@@ -1,0 +1,46 @@
+# GitHub API Client
+# Fetch repo info, latest releases, top contributors
+# codong run 26-github-api-client.cod
+
+token  = env.get("GITHUB_TOKEN", "")
+owner  = env.get("GITHUB_OWNER", "brettinhere")
+repo   = env.get("GITHUB_REPO", "Codong")
+
+base   = "https://api.github.com"
+headers = {Authorization: "Bearer {token}", Accept: "application/vnd.github+json"}
+
+fn gh_get(path) {
+    resp = http.get(base + path, headers: headers)
+    if !resp.ok {
+        return null
+    }
+    return resp.json
+}
+
+# Repo info
+info = gh_get("/repos/{owner}/{repo}")
+if info != null {
+    print("=== {info.full_name} ===")
+    print("Description : {info.description}")
+    print("Stars       : {info.stargazers_count}")
+    print("Forks       : {info.forks_count}")
+    print("Language    : {info.language}")
+    print("Open issues : {info.open_issues_count}")
+}
+
+# Latest release
+release = gh_get("/repos/{owner}/{repo}/releases/latest")
+if release != null {
+    print("\nLatest release: {release.tag_name}")
+    print("Published at  : {release.published_at}")
+    print("Assets        : {release.assets.len()}")
+}
+
+# Top contributors
+contribs = gh_get("/repos/{owner}/{repo}/contributors?per_page=5")
+if contribs != null {
+    print("\nTop contributors:")
+    for c in contribs {
+        print("  {c.login}: {c.contributions} commits")
+    }
+}

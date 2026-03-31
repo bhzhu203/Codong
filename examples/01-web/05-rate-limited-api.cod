@@ -1,0 +1,20 @@
+# Rate-Limited API with Redis
+# 60 requests per minute per IP
+# codong run 05-rate-limited-api.cod
+
+redis.connect("redis://localhost:6379")
+server = web.serve(port: 3004)
+
+server.use(web.rate_limit(max: 60, window: 60000))
+
+server.get("/data", fn(req, res) {
+    res.json({
+        data: "premium content",
+        ip: req.ip,
+        time: time.now().format("HH:mm:ss")
+    })
+})
+
+server.get("/status", fn(req, res) {
+    res.json({status: "ok", limits: "60 req/min per IP"})
+})

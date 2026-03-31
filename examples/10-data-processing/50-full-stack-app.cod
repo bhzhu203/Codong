@@ -1,0 +1,121 @@
+# Full-Stack Application
+# Todo app: REST API + SQLite + Redis cache + JWT auth + image avatar
+# This single file is a complete production-ready application
+# codong run 50-full-stack-app.cod
+
+# ─── Configuration ───────────────────────────────────────────────
+PORT       = int(env.get("PORT", "3015"))
+JWT_SECRET = env.get("JWT_SECRET", "codong-fullstack-secret")
+REDIS_URL  = env.get("REDIS_URL", "redis://localhost:6379")
+
+# ─── Storage ─────────────────────────────────────────────────────
+redis.connect(REDIS_URL)
+db.connect("sqlite:///fullstack.db")
+fs.mkdir("./avatars")
+
+db.query("CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE, password TEXT, avatar TEXT, created_at TEXT
+)", [])
+db.query("CREATE TABLE IF NOT EXISTS todos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER, title TEXT, done INTEGER DEFAULT 0,
+    priority TEXT DEFAULT 'normal', created_at TEXT
+)", [])
+
+# Seed demo user
+if db.count("users", "1=1") == 0 {
+    db.query("INSERT INTO users (username, password, created_at) VALUES (?,?,?)",
+        ["demo", "demo123", time.now().format("YYYY-MM-DD")])
+}
+
+# ─── Server ──────────────────────────────────────────────────────
+server = web.serve(port: PORT)
+server.use(web.cors(origins: ["*"]))
+
+# ─── Auth routes ─────────────────────────────────────────────────
+server.post("/auth/login", fn(req, res) {
+    body = req.json()
+    rows = db.query("SELECT * FROM users WHERE username=? AND password=?",
+        [body.username, body.password])
+    if rows.len() == 0 {
+        res.status(401).json({error: "invalid credentials"})
+        return
+    }
+    user = rows[0]
+    token = oauth.jwt.sign({user_id: user.id, username: user.username},
+        secret: JWT_SECRET, expires_in: 86400)
+    redis.set("session:{user.id}", "active", ttl: 86400)
+    res.json({token: token, username: user.username})
+})
+
+server.post("/auth/logout", fn(req, res) {
+    token = req.header("Authorization").replace("Bearer ", "")
+    claims = oauth.jwt.verify(token, secret: JWT_SECRET)
+    if claims != null {
+        redis.delete("session:{claims.user_id}")
+    }
+    res.json({ok: true})
+})
+
+# ─── Protected routes ────────────────────────────────────────────
+auth = oauth.jwt.middleware(secret: JWT_SECRET)
+server.use("/todos", auth)
+server.use("/me", auth)
+
+server.get("/me", fn(req, res) {
+    rows = db.query("SELECT id, username, avatar, created_at FROM users WHERE id=?",
+        [req.user.user_id])
+    todo_count = db.count("todos", "user_id={req.user.user_id}")
+    done_count  = db.count("todos", "user_id={req.user.user_id} AND done=1")
+    profile = rows[0]
+    profile.todo_count = todo_count
+    profile.done_count = done_count
+    res.json(profile)
+})
+
+server.get("/todos", fn(req, res) {
+    cache_key = "todos:{req.user.user_id}"
+    result = redis.cache(cache_key, ttl: 10, fn() {
+        return db.query("SELECT * FROM todos WHERE user_id=? ORDER BY id DESC",
+            [req.user.user_id])
+    })
+    res.json({todos: result, count: result.len()})
+})
+
+server.post("/todos", fn(req, res) {
+    body = req.json()
+    db.query("INSERT INTO todos (user_id, title, priority, created_at) VALUES (?,?,?,?)",
+        [req.user.user_id, body.title, body.get("priority","normal"),
+         time.now().format("YYYY-MM-DD")])
+    redis.delete("todos:{req.user.user_id}")
+    res.status(201).json({ok: true})
+})
+
+server.put("/todos/:id/done", fn(req, res) {
+    db.query("UPDATE todos SET done=1 WHERE id=? AND user_id=?",
+        [req.param("id"), req.user.user_id])
+    redis.delete("todos:{req.user.user_id}")
+    res.json({ok: true})
+})
+
+server.delete("/todos/:id", fn(req, res) {
+    db.query("DELETE FROM todos WHERE id=? AND user_id=?",
+        [req.param("id"), req.user.user_id])
+    redis.delete("todos:{req.user.user_id}")
+    res.json({ok: true})
+})
+
+# ─── Stats (public) ──────────────────────────────────────────────
+server.get("/stats", fn(req, res) {
+    res.json({
+        users: db.count("users", "1=1"),
+        todos: db.count("todos", "1=1"),
+        done:  db.count("todos", "done=1"),
+        time:  time.now().format("YYYY-MM-DD HH:mm:ss")
+    })
+})
+
+print("Full-stack app running on http://localhost:{PORT}")
+print("Login: POST /auth/login  {username:demo, password:demo123}")
+print("Docs:  GET  /stats")

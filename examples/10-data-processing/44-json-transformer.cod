@@ -1,0 +1,62 @@
+# JSON Transformer
+# Reshape, merge, flatten, and validate JSON structures
+# codong run 44-json-transformer.cod
+
+# Complex nested JSON (e.g., from an external API)
+raw_api_response = {
+    status: "success",
+    meta: {page: 1, per_page: 3, total: 100},
+    data: {
+        users: [
+            {id: 1, full_name: "Alice Chen",   contact: {email: "alice@example.com", phone: "555-0101"}, role: "admin",  active: true},
+            {id: 2, full_name: "Bob Smith",    contact: {email: "bob@example.com",   phone: "555-0102"}, role: "user",   active: true},
+            {id: 3, full_name: "Carol Davis",  contact: {email: "carol@example.com", phone: "555-0103"}, role: "editor", active: false}
+        ]
+    }
+}
+
+# Flatten to a simple list
+fn transform_user(u) {
+    name_parts = u.full_name.split(" ")
+    return {
+        id:         u.id,
+        first_name: name_parts[0],
+        last_name:  name_parts.last(),
+        email:      u.contact.email,
+        phone:      u.contact.phone,
+        role:       u.role,
+        active:     u.active
+    }
+}
+
+users = raw_api_response.data.users.map(transform_user)
+active_users = users.filter(fn(u) => u.active)
+
+print("All users (transformed):")
+for u in users {
+    status = "active"
+    if !u.active { status = "inactive" }
+    print("  [{u.id}] {u.first_name} {u.last_name} <{u.email}> — {u.role} ({status})")
+}
+
+# Merge two data sources
+permissions = {
+    admin:  ["read", "write", "delete", "manage"],
+    editor: ["read", "write"],
+    user:   ["read"]
+}
+
+enriched = users.map(fn(u) {
+    u.permissions = permissions.get(u.role, [])
+    return u
+})
+
+print("\nEnriched users with permissions:")
+for u in enriched {
+    print("  {u.first_name}: {u.permissions.join(', ')}")
+}
+
+# Flatten nested JSON paths
+flat = json.flat(raw_api_response)
+print("\nFlattened JSON keys: {flat.keys().len()}")
+fs.write("./transformed_users.json", json.pretty(enriched))

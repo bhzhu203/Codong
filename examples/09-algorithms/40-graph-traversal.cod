@@ -1,0 +1,72 @@
+# Graph Traversal — BFS and DFS
+# Adjacency list representation with path finding
+# codong run 40-graph-traversal.cod
+
+# Build a graph (undirected)
+graph = {
+    A: ["B", "C"],
+    B: ["A", "D", "E"],
+    C: ["A", "F"],
+    D: ["B"],
+    E: ["B", "F"],
+    F: ["C", "E", "G"],
+    G: ["F"]
+}
+
+fn bfs(start, target) {
+    visited = {}
+    queue = [[start]]
+
+    loop {
+        if queue.len() == 0 { break }
+        path = queue.shift()
+        node = path.last()
+
+        if node == target { return path }
+        if visited.has(node) { continue }
+        visited[node] = true
+
+        neighbors = graph.get(node, [])
+        for neighbor in neighbors {
+            if !visited.has(neighbor) {
+                new_path = path.slice(0, path.len())
+                new_path.push(neighbor)
+                queue.push(new_path)
+            }
+        }
+    }
+    return null
+}
+
+fn dfs(start, target, visited) {
+    if visited == null { visited = {} }
+    if start == target { return [start] }
+    visited[start] = true
+
+    neighbors = graph.get(start, [])
+    for neighbor in neighbors {
+        if !visited.has(neighbor) {
+            sub_path = dfs(neighbor, target, visited)
+            if sub_path != null {
+                result = [start]
+                for n in sub_path { result.push(n) }
+                return result
+            }
+        }
+    }
+    return null
+}
+
+print("=== Graph Traversal ===")
+print("Graph nodes: {graph.keys().join(', ')}")
+
+pairs = [["A","G"], ["B","F"], ["D","G"], ["A","D"]]
+for pair in pairs {
+    src = pair[0]
+    dst = pair[1]
+    bfs_path = bfs(src, dst)
+    dfs_path = dfs(src, dst, null)
+    print("\n{src} → {dst}")
+    print("  BFS (shortest): {bfs_path.join(' → ')}")
+    print("  DFS (one path): {dfs_path.join(' → ')}")
+}

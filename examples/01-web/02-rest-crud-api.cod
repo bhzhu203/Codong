@@ -1,0 +1,54 @@
+# REST CRUD API — Users
+# Full Create/Read/Update/Delete with SQLite
+# codong run 02-rest-crud-api.cod
+
+db.connect("sqlite:///users.db")
+db.query("CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    created_at TEXT
+)", [])
+
+server = web.serve(port: 3001)
+
+# List all users
+server.get("/users", fn(req, res) {
+    users = db.query("SELECT * FROM users ORDER BY id DESC", [])
+    res.json({data: users, count: users.len()})
+})
+
+# Get single user
+server.get("/users/:id", fn(req, res) {
+    id = req.param("id")
+    rows = db.query("SELECT * FROM users WHERE id = ?", [id])
+    if rows.len() == 0 {
+        res.status(404).json({error: "user not found"})
+        return
+    }
+    res.json(rows[0])
+})
+
+# Create user
+server.post("/users", fn(req, res) {
+    body = req.json()
+    db.query("INSERT INTO users (name, email, created_at) VALUES (?, ?, ?)",
+        [body.name, body.email, time.now().format("YYYY-MM-DD")])
+    res.status(201).json({ok: true, message: "user created"})
+})
+
+# Update user
+server.put("/users/:id", fn(req, res) {
+    id = req.param("id")
+    body = req.json()
+    db.query("UPDATE users SET name = ?, email = ? WHERE id = ?",
+        [body.name, body.email, id])
+    res.json({ok: true, message: "user updated"})
+})
+
+# Delete user
+server.delete("/users/:id", fn(req, res) {
+    id = req.param("id")
+    db.query("DELETE FROM users WHERE id = ?", [id])
+    res.json({ok: true, message: "user deleted"})
+})

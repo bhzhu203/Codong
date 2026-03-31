@@ -1,0 +1,75 @@
+# Functional Programming Patterns
+# map, filter, reduce, compose, curry — idiomatic Codong
+# codong run 42-functional-patterns.cod
+
+# Composition
+fn compose(f, g) {
+    return fn(x) { return f(g(x)) }
+}
+
+fn pipe(fns) {
+    return fn(x) {
+        result = x
+        for f in fns { result = f(result) }
+        return result
+    }
+}
+
+# Currying
+fn curry_add(a) {
+    return fn(b) { return a + b }
+}
+
+fn curry_multiply(a) {
+    return fn(b) { return a * b }
+}
+
+# Partial application
+fn partial(f, first_arg) {
+    return fn(second_arg) { return f(first_arg, second_arg) }
+}
+
+# Demo
+double = curry_multiply(2)
+triple = curry_multiply(3)
+add10  = curry_add(10)
+
+numbers = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+
+# Pipeline: filter evens → double → add 10
+process = pipe([
+    fn(list) => list.filter(fn(x) => x % 2 == 0),
+    fn(list) => list.map(double),
+    fn(list) => list.map(add10)
+])
+
+result = process(numbers)
+print("Evens, doubled, +10: {result.join(', ')}")
+
+# Compose: triple then add10
+triple_then_add10 = compose(add10, triple)
+print("triple_then_add10(5): {triple_then_add10(5)}")
+
+# Reduce patterns
+sum     = numbers.reduce(fn(a, b) => a + b, 0)
+product = numbers.filter(fn(x) => x <= 5).reduce(fn(a, b) => a * b, 1)
+max_val = numbers.reduce(fn(a, b) { if a > b { return a }; return b }, 0)
+
+print("Sum 1..10       : {sum}")
+print("Product 1..5    : {product}")
+print("Max             : {max_val}")
+
+# Group by
+words = ["apple", "ant", "banana", "bear", "cherry", "cat"]
+grouped = words.reduce(fn(acc, word) {
+    key = word.slice(0, 1)
+    current = acc.get(key, [])
+    current.push(word)
+    acc[key] = current
+    return acc
+}, {})
+
+print("Grouped by first letter:")
+for letter in grouped.keys() {
+    print("  {letter}: {grouped[letter].join(', ')}")
+}

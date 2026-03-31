@@ -1,0 +1,71 @@
+# Binary Search Tree
+# Insert, search, in-order traversal, min/max
+# codong run 41-binary-search-tree.cod
+
+# BST stored as a flat map of nodes
+nodes = {}
+root = null
+
+fn new_node(val) {
+    return {val: val, left: null, right: null}
+}
+
+fn insert(key, val) {
+    node_key = str(val)
+    nodes[node_key] = new_node(val)
+
+    if root == null {
+        root = node_key
+        return
+    }
+
+    current = root
+    loop {
+        current_val = nodes[current].val
+        if val < current_val {
+            if nodes[current].left == null {
+                nodes[current].left = node_key
+                break
+            }
+            current = nodes[current].left
+        } else {
+            if nodes[current].right == null {
+                nodes[current].right = node_key
+                break
+            }
+            current = nodes[current].right
+        }
+    }
+}
+
+fn search(val) {
+    current = root
+    loop {
+        if current == null { return false }
+        current_val = nodes[current].val
+        if val == current_val { return true }
+        if val < current_val {
+            current = nodes[current].left
+        } else {
+            current = nodes[current].right
+        }
+    }
+}
+
+fn inorder(key, result) {
+    if key == null { return result }
+    result = inorder(nodes[key].left, result)
+    result.push(nodes[key].val)
+    result = inorder(nodes[key].right, result)
+    return result
+}
+
+values = [50, 30, 70, 20, 40, 60, 80, 10, 35]
+for v in values { insert(str(v), v) }
+
+sorted = inorder(root, [])
+print("In-order traversal: {sorted.join(', ')}")
+print("Search 40: {search(40)}")
+print("Search 45: {search(45)}")
+print("Min: {sorted.first()}")
+print("Max: {sorted.last()}")

@@ -1,0 +1,58 @@
+# Real-time Leaderboard with Redis Sorted Sets
+# Add scores, get top players, user rank
+# codong run 30-leaderboard.cod
+
+redis.connect("redis://localhost:6379")
+redis.delete("game:leaderboard")
+
+BOARD = "game:leaderboard"
+
+fn add_score(player, score) {
+    redis.zadd(BOARD, {[player]: score})
+}
+
+fn get_top(n) {
+    return redis.zrevrange(BOARD, 0, n - 1, with_scores: true)
+}
+
+fn get_rank(player) {
+    rank = redis.zrevrank(BOARD, player)
+    if rank == null { return null }
+    return rank + 1
+}
+
+fn get_score(player) {
+    return redis.zscore(BOARD, player)
+}
+
+# Simulate gameplay
+players = [
+    {name: "Alice",   score: 4200},
+    {name: "Bob",     score: 3800},
+    {name: "Carol",   score: 5100},
+    {name: "Dave",    score: 2900},
+    {name: "Eve",     score: 4750},
+    {name: "Frank",   score: 6200},
+    {name: "Grace",   score: 5800}
+]
+
+for p in players {
+    add_score(p.name, p.score)
+}
+
+print("=== Leaderboard ===")
+top5 = get_top(5)
+rank = 1
+for entry in top5 {
+    print("  #{rank}  {entry.member.pad_end(8,' ')}  {entry.score}")
+    rank = rank + 1
+}
+
+print("\n  Alice's rank : #{get_rank('Alice')}")
+print("  Alice's score: {get_score('Alice')}")
+
+# Alice gets a bonus round
+add_score("Alice", 4900)
+print("\nAfter Alice scores 4900...")
+print("  Alice's new rank : #{get_rank('Alice')}")
+print("  Alice's new score: {get_score('Alice')}")

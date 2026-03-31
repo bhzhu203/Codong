@@ -1,0 +1,41 @@
+# Multi-Provider LLM Comparison
+# Same prompt sent to multiple providers, compare results
+# codong run 20-multi-provider-compare.cod
+
+anthropic_key = env.get("ANTHROPIC_API_KEY", "")
+openai_key    = env.get("OPENAI_API_KEY", "")
+
+prompt = "Explain recursion in exactly 2 sentences, suitable for beginners."
+
+print("=== Multi-Provider LLM Comparison ===")
+print("Prompt: {prompt}\n")
+
+if anthropic_key != "" {
+    r = llm.ask(
+        model: "claude-haiku-4-5-20251001",
+        prompt: prompt,
+        api_key: anthropic_key,
+        provider: "anthropic",
+        max_tokens: 100
+    )
+    print("Claude Haiku:")
+    print("  {r.text}")
+    print("  Tokens: {r.usage.total_tokens}\n")
+}
+
+if openai_key != "" {
+    r = llm.ask(
+        model: "gpt-4o-mini",
+        prompt: prompt,
+        api_key: openai_key,
+        provider: "openai",
+        max_tokens: 100
+    )
+    print("GPT-4o-mini:")
+    print("  {r.text}")
+    print("  Tokens: {r.usage.total_tokens}\n")
+}
+
+if anthropic_key == "" and openai_key == "" {
+    print("Set ANTHROPIC_API_KEY or OPENAI_API_KEY to run this example")
+}

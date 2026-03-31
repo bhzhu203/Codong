@@ -1,0 +1,43 @@
+# Batch Database Operations
+# Bulk insert, transaction, and batch update patterns
+# codong run 14-batch-operations.cod
+
+db.connect("sqlite:///batch.db")
+db.query("CREATE TABLE IF NOT EXISTS products (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sku TEXT UNIQUE,
+    name TEXT,
+    price REAL,
+    stock INTEGER
+)", [])
+
+# Batch insert 1000 products
+print("Inserting 1000 products...")
+start = time.now().unix()
+
+products = []
+i = 1
+loop {
+    products.push({
+        sku: "SKU-{i.str().pad_start(4,'0')}",
+        name: "Product {i}",
+        price: 9.99 + (i * 0.01),
+        stock: i * 10
+    })
+    i = i + 1
+    if i > 1000 { break }
+}
+
+db.batch_insert("products", products)
+
+elapsed = time.now().unix() - start
+print("Inserted {products.len()} rows in {elapsed}s")
+
+# Stats
+total = db.count("products", "1=1")
+avg_price = db.avg("products", "price", "1=1")
+total_stock = db.sum("products", "stock", "1=1")
+
+print("Total products: {total}")
+print("Avg price: ${avg_price}")
+print("Total stock: {total_stock} units")

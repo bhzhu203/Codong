@@ -1,0 +1,47 @@
+# Config Manager
+# Layered config: defaults → config.json → environment variables
+# codong run 23-config-manager.cod
+
+fn load_config(config_path) {
+    defaults = {
+        host: "localhost",
+        port: 8080,
+        debug: false,
+        database: "sqlite:///app.db",
+        log_level: "info",
+        max_connections: 10
+    }
+
+    # Layer 2: config file
+    raw = fs.read(config_path)
+    if raw != null {
+        file_config = json.parse(raw)
+        defaults = defaults.merge(file_config)
+    }
+
+    # Layer 3: environment variables override everything
+    if env.get("HOST", "") != "" { defaults.host = env.get("HOST", "") }
+    if env.get("PORT", "") != "" { defaults.port = int(env.get("PORT", "8080")) }
+    if env.get("DEBUG", "") != "" { defaults.debug = env.get("DEBUG", "") == "true" }
+    if env.get("DATABASE_URL", "") != "" { defaults.database = env.get("DATABASE_URL", "") }
+
+    return defaults
+}
+
+# Write a sample config file
+fs.write("./config.json", json.stringify({
+    port: 9090,
+    debug: true,
+    app_name: "MyApp"
+}))
+
+config = load_config("./config.json")
+
+print("=== Loaded Configuration ===")
+for key in config.keys() {
+    print("  {key}: {config[key]}")
+}
+
+# Save resolved config for audit
+fs.write("./config.resolved.json", json.pretty(config))
+print("\nResolved config saved to config.resolved.json")

@@ -1,0 +1,17 @@
+# Hello World Web API
+# codong run 01-hello-api.cod
+
+server = web.serve(port: 3000)
+
+server.get("/", fn(req, res) {
+    res.json({message: "Hello from Codong", version: "1.0"})
+})
+
+server.get("/hello/:name", fn(req, res) {
+    name = req.param("name")
+    res.json({message: "Hello, {name}!"})
+})
+
+server.get("/ping", fn(req, res) {
+    res.json({status: "ok", time: time.now().format("YYYY-MM-DD HH:mm:ss")})
+})
