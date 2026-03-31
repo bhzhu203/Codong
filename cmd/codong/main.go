@@ -28,19 +28,39 @@ func main() {
 	switch command {
 	case "run":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: codong run <file.cod>")
+			fmt.Fprintln(os.Stderr, "Usage: codong run <file.cod> [-- args...]")
 			os.Exit(2)
 		}
-		if err := runner.Run(os.Args[2]); err != nil {
+		// Parse arguments after --
+		scriptArgs := []string{}
+		scriptPath := os.Args[2]
+		for i := 3; i < len(os.Args); i++ {
+			if os.Args[i] == "--" {
+				// Collect all remaining arguments
+				scriptArgs = os.Args[i+1:]
+				break
+			}
+		}
+		if err := runner.RunWithArgs(scriptPath, scriptArgs); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 	case "eval":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: codong eval <file.cod>")
+			fmt.Fprintln(os.Stderr, "Usage: codong eval <file.cod> [-- args...]")
 			os.Exit(2)
 		}
-		evalFile(os.Args[2])
+		// Parse arguments after --
+		scriptArgs := []string{}
+		scriptPath := os.Args[2]
+		for i := 3; i < len(os.Args); i++ {
+			if os.Args[i] == "--" {
+				// Collect all remaining arguments
+				scriptArgs = os.Args[i+1:]
+				break
+			}
+		}
+		evalFile(scriptPath, scriptArgs)
 	case "version":
 		fmt.Printf("codong %s\n", version)
 	case "fmt":
@@ -89,7 +109,7 @@ func printUsage() {
 }
 
 // evalFile runs a .cod file through the AST interpreter (no stdlib support).
-func evalFile(path string) {
+func evalFile(path string, scriptArgs []string) {
 	source, err := os.ReadFile(path)
 	if err != nil {
 		writeJSONError("fs", "E5001_FILE_NOT_FOUND", "file not found: "+path, "check file path")
@@ -113,6 +133,13 @@ func evalFile(path string) {
 	absPath, _ := filepath.Abs(path)
 	interp.SetWorkDir(filepath.Dir(absPath))
 	env := interpreter.NewEnvironment()
+	
+	// Set command-line arguments
+	if len(scriptArgs) > 0 {
+		allArgs := append([]string{os.Args[0]}, scriptArgs...)
+		os.Args = allArgs
+	}
+	
 	result := interp.Eval(program, env)
 
 	if errObj, ok := result.(*interpreter.ErrorObject); ok {

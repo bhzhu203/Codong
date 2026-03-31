@@ -39,6 +39,11 @@ func cachedBinary(goSource string) (string, bool) {
 // Run compiles and runs a .cod file via Go IR.
 // If the file has been compiled before (same content), the cached binary is reused.
 func Run(codFile string) error {
+	return RunWithArgs(codFile, []string{})
+}
+
+// RunWithArgs compiles and runs a .cod file with command-line arguments.
+func RunWithArgs(codFile string, args []string) error {
 	source, err := os.ReadFile(codFile)
 	if err != nil {
 		return fmt.Errorf("cannot read %s: %w", codFile, err)
@@ -61,24 +66,24 @@ func Run(codFile string) error {
 	// Check compilation cache
 	binPath, cached := cachedBinary(goSource)
 	if cached {
-		return execBinary(binPath)
+		return execBinaryWithArgs(binPath, args)
 	}
 
 	// Cache miss: compile to persistent binary
 	if err := os.MkdirAll(filepath.Dir(binPath), 0755); err != nil {
 		// Fall back to go run if cache dir can't be created
-		return runGoSource(goSource)
+		return runGoSourceWithArgs(goSource, args)
 	}
 	if err := buildGoSourceTo(goSource, binPath); err != nil {
 		return err
 	}
-	return execBinary(binPath)
+	return execBinaryWithArgs(binPath, args)
 }
 
-// execBinary runs a pre-compiled binary with stdin/stdout/stderr forwarded.
-func execBinary(binPath string) error {
-	// Use syscall.Exec to replace process (zero overhead)
-	return syscall.Exec(binPath, []string{binPath}, os.Environ())
+// execBinaryWithArgs runs a pre-compiled binary with arguments.
+func execBinaryWithArgs(binPath string, args []string) error {
+	allArgs := append([]string{binPath}, args...)
+	return syscall.Exec(binPath, allArgs, os.Environ())
 }
 
 // Build compiles a .cod file to a standalone binary.
@@ -120,13 +125,17 @@ func compile(source string, sourceDir string) (string, []string) {
 }
 
 func runGoSource(goSource string) error {
+	return runGoSourceWithArgs(goSource, []string{})
+}
+
+func runGoSourceWithArgs(goSource string, args []string) error {
 	dir, err := os.MkdirTemp("", "codong-run-*")
 	if err != nil {
 		return fmt.Errorf("cannot create temp dir: %w", err)
 	}
 	defer os.RemoveAll(dir)
 
-	return execInDir(dir, goSource, "run")
+	return execInDirWithArgs(dir, goSource, "run", args)
 }
 
 // buildGoSourceTo compiles Go source to a specific output binary path (used by cache).
@@ -156,6 +165,10 @@ func buildGoSource(goSource, outputPath string) error {
 }
 
 func execInDir(dir, goSource, mode string, extra ...string) error {
+	return execInDirWithArgs(dir, goSource, mode, []string{}, extra...)
+}
+
+func execInDirWithArgs(dir, goSource, mode string, args []string, extra ...string) error {
 	// Write main.go
 	mainFile := filepath.Join(dir, "main.go")
 	if err := os.WriteFile(mainFile, []byte(goSource), 0644); err != nil {
@@ -189,8 +202,9 @@ require (
 	}
 
 	if mode == "run" {
-		// go run main.go — intercept stderr to convert Go errors to Codong errors
-		cmd := exec.Command("go", "run", "main.go")
+		// go run main.go [args...] — intercept stderr to convert Go errors to Codong errors
+		goArgs := append([]string{"run", "main.go"}, args...)
+		cmd := exec.Command("go", goArgs...)
 		cmd.Dir = dir
 		cmd.Stdout = os.Stdout
 		cmd.Stdin = os.Stdin
