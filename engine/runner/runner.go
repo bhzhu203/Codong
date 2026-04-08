@@ -15,19 +15,11 @@ import (
 	"github.com/codong-lang/codong/engine/parser"
 )
 
-// goModTemplate is the fixed go.mod template for all Codong programs.
-// go mod tidy will automatically remove unused dependencies.
+// goModTemplate is the minimal go.mod template for all Codong programs.
+// go mod tidy will automatically add/remove dependencies based on actual imports.
 const goModTemplate = `module codong-app
 
 go 1.22
-
-require (
-	github.com/go-sql-driver/mysql v1.7.1
-	github.com/lib/pq v1.10.9
-	github.com/redis/go-redis/v9 v9.3.0
-	golang.org/x/image v0.23.0
-	modernc.org/sqlite v1.47.0
-)
 `
 
 // cacheDir returns ~/.codong/cache
