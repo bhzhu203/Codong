@@ -764,6 +764,8 @@ func escapeGoName(name string) string {
 
 func (g *Generator) genIdentifier(name string) string {
 	switch name {
+	case "input":
+		return "cInput"
 	case "print":
 		return "cPrint"
 	case "type_of":
@@ -867,6 +869,14 @@ func (g *Generator) genCall(e *parser.CallExpression) string {
 
 	// Built-in functions — direct call (not cCallFn)
 	switch fn {
+	case "cInput":
+		if len(args) > 1 {
+			return fmt.Sprintf("cInputArgError(%d)", len(args))
+		}
+		if len(args) == 1 {
+			return fmt.Sprintf("cInput(%s)", args[0])
+		}
+		return "cInput(nil)"
 	case "cPrint":
 		if len(args) > 1 {
 			return fmt.Sprintf("cPrintMultiErr(%d)", len(args))

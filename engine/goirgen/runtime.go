@@ -1055,6 +1055,31 @@ func cPrintV(v Value) Value {
 	return nil
 }
 
+// stdinReader is shared across all cInput() calls so consecutive reads
+// never lose bytes that were already buffered from the OS.
+var stdinReader = bufio.NewReader(os.Stdin)
+
+func cInput(prompt Value) Value {
+	if prompt != nil {
+		fmt.Print(toString(prompt))
+	}
+	line, err := stdinReader.ReadString('\n')
+	if err != nil && err != io.EOF {
+		e := cError("E1005_INVALID_ARGUMENT", "input() read error: "+err.Error())
+		e.Fix = "check that stdin is readable"
+		cPanicExit(e)
+	}
+	return strings.TrimRight(line, "\r\n")
+}
+
+func cInputArgError(count int) Value {
+	e := cError("E1005_INVALID_ARGUMENT",
+		fmt.Sprintf("input() takes 0 or 1 arguments (%d given)", count))
+	e.Fix = "use: input() or input(\"prompt\")"
+	cPanicExit(e)
+	return nil
+}
+
 func cPrintError(code, msg string, opts ...string) {
 	e := cError(code, msg)
 	if len(opts) > 0 && opts[0] != "" {

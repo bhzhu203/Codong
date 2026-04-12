@@ -1,11 +1,14 @@
 package interpreter
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -2067,10 +2070,35 @@ type BuiltinFunction struct {
 func (b *BuiltinFunction) Type() string    { return "builtin" }
 func (b *BuiltinFunction) Inspect() string { return "builtin:" + b.Name }
 
+// stdinReader is a package-level singleton so consecutive input() calls
+// share the same buffer and never drop already-read bytes.
+var stdinReader = bufio.NewReader(os.Stdin)
+
 var builtins map[string]*BuiltinFunction
 
 func init() {
 	builtins = map[string]*BuiltinFunction{
+	"input": {
+		Name: "input",
+		Fn: func(interp *Interpreter, args ...Object) Object {
+			if len(args) > 1 {
+				return newRuntimeError(codongerror.E1005_INVALID_ARGUMENT,
+					fmt.Sprintf("input() takes 0 or 1 arguments (%d given)", len(args)),
+					"use: input() or input(\"prompt\")")
+			}
+			// Print optional prompt — no newline so cursor stays inline
+			if len(args) == 1 {
+				fmt.Print(args[0].Inspect())
+			}
+			line, err := stdinReader.ReadString('\n')
+			if err != nil && err != io.EOF {
+				return newRuntimeError(codongerror.E1005_INVALID_ARGUMENT,
+					"input() read error: "+err.Error(),
+					"check that stdin is readable")
+			}
+			return &StringObject{Value: strings.TrimRight(line, "\r\n")}
+		},
+	},
 	"print": {
 		Name: "print",
 		Fn: func(interp *Interpreter, args ...Object) Object {
