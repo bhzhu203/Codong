@@ -107,6 +107,19 @@ func cWebviewHtml(html Value, title Value, w Value, h Value) Value {
 
 	})
 
+	// Native window-close interception (title-bar X). The runtime asks the
+	// page via window.__onNativeClose() so unsaved-changes flows can run
+	// first; a page without that handler is force-closed exactly like
+	// before. __cForceClose() performs the actual native destroy.
+
+	wv.Bind("__cForceClose", func() {
+
+		cWvForceClose(wv.Window())
+
+	})
+
+	cWvConnectClose(wv.Window())
+
 	wv.SetHtml(toString(html))
 
 	wv.Run()
@@ -118,12 +131,14 @@ func cWebviewHtml(html Value, title Value, w Value, h Value) Value {
 
 // WebviewCgoPreamble is injected verbatim into the import block of the
 // generated main.go (Linux only) when the webview module is used. It
-// declares the C helpers for native file dialogs; gtk+-3.0 is already a
-// build dependency of webkit2gtk-4.0, which webview_go links against.
-// The preamble comment must stay directly above the "C" import line.
+// declares the C helpers for native file dialogs and window-close
+// interception; gtk+-3.0 and webkit2gtk-4.0 are already build dependencies
+// of webview_go. The preamble comment must stay directly above the "C"
+// import line.
 const WebviewCgoPreamble = `	/*
-#cgo pkg-config: gtk+-3.0
+#cgo pkg-config: gtk+-3.0 webkit2gtk-4.0
 #include <gtk/gtk.h>
+#include <webkit2/webkit2.h>
 
 // Native open/save file dialog for webview pages. Returns a newly
 // allocated path (free with wv_free) or NULL if the user cancelled.
@@ -167,6 +182,37 @@ static void wv_clipboard_write(const char *text) {
     if (text == NULL || text[0] == '\0') return;
     GtkClipboard *clip = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
     gtk_clipboard_set_text(clip, text, -1);
+}
+
+// Window-close interception. The WM close button (title-bar X) must not
+// destroy the window directly: unsaved state would be lost silently.
+// Instead swallow the event and ask the page via window.__onNativeClose();
+// the page either runs its own confirmation flow (and later calls
+// __cExit / __cForceClose) or has no handler, in which case the fallback
+// below destroys the window so default behavior is preserved.
+static gboolean wv_close_request(GtkWidget *win, GdkEvent *ev, gpointer data) {
+    (void)ev; (void)data;
+    GtkWidget *child = gtk_bin_get_child(GTK_BIN(win));
+    if (child != NULL && WEBKIT_IS_WEB_VIEW(child)) {
+        webkit_web_view_run_javascript(WEBKIT_WEB_VIEW(child),
+            "(function(){if(window.__onNativeClose){window.__onNativeClose();}"
+            "else if(window.__cForceClose){window.__cForceClose();}})()",
+            NULL, NULL, NULL);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static void wv_connect_close(void *win) {
+    if (win == NULL) return;
+    g_signal_connect(G_OBJECT(win), "delete-event", G_CALLBACK(wv_close_request), NULL);
+}
+
+// Direct destroy: skips delete-event (no ask-page round-trip) and lets
+// webview's own "destroy" handler end the run loop cleanly.
+static void wv_destroy_window(void *win) {
+    if (win == NULL) return;
+    gtk_widget_destroy(GTK_WIDGET(win));
 }
 */
 	"C"
@@ -232,6 +278,18 @@ func cWvSaveFile(path, content, suggested string) string {
 func cWvExit() {
 
 	os.Exit(0)
+
+}
+
+func cWvConnectClose(win unsafe.Pointer) {
+
+	C.wv_connect_close(win)
+
+}
+
+func cWvForceClose(win unsafe.Pointer) {
+
+	C.wv_destroy_window(win)
 
 }
 
@@ -345,6 +403,18 @@ func cWvSaveFile(path, content, suggested string) string {
 func cWvExit() {
 
 	os.Exit(0)
+
+}
+
+func cWvConnectClose(win any) {
+
+	// no native window here; WM close behaves as before
+
+}
+
+func cWvForceClose(win any) {
+
+	// no-native-window no-op
 
 }
 
