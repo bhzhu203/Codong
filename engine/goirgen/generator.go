@@ -781,6 +781,11 @@ func escapeGoName(name string) string {
 }
 
 func (g *Generator) genIdentifier(name string) string {
+	// A user-declared variable/function shadows a builtin name (e.g. `input = ...`).
+	// Declarations below use escapeGoName, so references must too.
+	if name != "_" && name != "true" && name != "false" && name != "null" && g.declared[name] {
+		return escapeGoName(name)
+	}
 	switch name {
 	case "input":
 		return "cInput"
@@ -1040,7 +1045,7 @@ func (g *Generator) genWebCall(method string, args []string, named map[string]pa
 	case "serve":
 		port := "8080"
 		if len(args) > 0 {
-			port = args[0]
+			port = fmt.Sprintf("int(toFloat(%s))", args[0])
 		}
 		if named != nil {
 			if p, ok := named["port"]; ok {
@@ -1058,6 +1063,16 @@ func (g *Generator) genWebCall(method string, args []string, named map[string]pa
 		return fmt.Sprintf("cMap(\"_type\", \"redirect\", \"url\", %s, \"status\", float64(302))", args[0])
 	case "response":
 		return fmt.Sprintf("cWebResponse(%s)", strings.Join(args, ", "))
+	case "bytes":
+		data := "nil"
+		if len(args) > 0 {
+			data = args[0]
+		}
+		ct := `""`
+		if len(args) > 1 {
+			ct = fmt.Sprintf("toString(%s)", args[1])
+		}
+		return fmt.Sprintf(`cMap("_type", "bytes", "data", %s, "status", float64(200), "content_type", %s)`, data, ct)
 	case "sse":
 		if len(args) > 0 {
 			return fmt.Sprintf("cWebSSE(%s)", args[0])

@@ -862,6 +862,18 @@ func writeResponse(w http.ResponseWriter, req *http.Request, result Value) {
 
 			w.Write(jb)
 
+		case "bytes":
+
+			ct := toString(m.Entries["content_type"])
+
+			if ct == "" { ct = "application/octet-stream" }
+
+			if w.Header().Get("Content-Type") == "" { w.Header().Set("Content-Type", ct) }
+
+			w.WriteHeader(status)
+
+			if b, ok := m.Entries["data"].([]byte); ok { w.Write(b) }
+
 		case "text":
 
 			if w.Header().Get("Content-Type") == "" { w.Header().Set("Content-Type", "text/plain") }
