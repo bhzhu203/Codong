@@ -15,12 +15,43 @@ import (
 	"github.com/codong-lang/codong/engine/parser"
 )
 
-// goModTemplate is the minimal go.mod template for all Codong programs.
-// go mod tidy will automatically add/remove dependencies based on actual imports.
-const goModTemplate = `module codong-app
+// goModTemplate is the minimal go.mod template for programs that need no
+// patched module. go mod tidy will automatically add/remove dependencies
+// based on actual imports. The `go` directive follows the generator's
+// requirement for the last compiled program: the mygo module needs Go >=
+// 1.27.1 (its own go.mod declares it), everything else keeps the 1.22
+// baseline. mygo programs get goModTemplateMygo instead.
+func goModTemplate() string {
+	return fmt.Sprintf(`module codong-app
 
-go 1.22
-`
+go %s
+`, goirgen.LastGenerateGoVersion())
+}
+
+// writeGoMod writes the go.mod for a build directory: plain programs get the
+// minimal template, mygo programs pin the module to Codong's patched copy
+// (built by ensurePatchedMygo).
+func writeGoMod(dir string) error {
+	mod := goModTemplate()
+	if goirgen.LastGenerateUsesMygo() {
+		patchedDir, err := ensurePatchedMygo()
+		if err != nil {
+			return err
+		}
+		mod = goModTemplateMygo(patchedDir)
+	}
+	return os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0644)
+}
+
+// tidyHint adds a friendly explanation when go mod tidy fails for a program
+// whose go directive is above the baseline (currently the mygo module, which
+// needs Go >= 1.27.1).
+func tidyHint(err error) error {
+	if goirgen.LastGenerateGoVersion() == goirgen.DefaultGoVersion {
+		return fmt.Errorf("go mod tidy failed: %w", err)
+	}
+	return fmt.Errorf("go mod tidy failed: %w — 该程序使用 mygo 模块，需要 Go >= %s：请升级 Go 工具链，或在可访问模块代理的网络下保持 GOTOOLCHAIN=auto 让 go 命令自动下载对应 toolchain", err, goirgen.MygoGoVersion)
+}
 
 // cacheDir returns ~/.codong/cache
 func cacheDir() string {
@@ -31,10 +62,15 @@ func cacheDir() string {
 	return filepath.Join(home, ".codong", "cache")
 }
 
+// cacheEpoch names build inputs that live outside the generated Go source
+// itself, currently the mygo patch (see mygo_patch.go). Bump it whenever
+// they change: together with the source it keys the binary cache.
+const cacheEpoch = mygoPatchRev
+
 // cachedBinary returns the path to the cached binary for a given Go source hash.
 // Returns ("", false) if not cached.
 func cachedBinary(goSource string) (string, bool) {
-	h := sha256.Sum256([]byte(goSource))
+	h := sha256.Sum256([]byte(goSource + "\x00" + cacheEpoch))
 	key := fmt.Sprintf("%x", h)
 	bin := filepath.Join(cacheDir(), key, "main")
 	if info, err := os.Stat(bin); err == nil && !info.IsDir() {
@@ -181,8 +217,8 @@ func execInDirWithStatic(dir, goSource, outputPath string, static bool) error {
 		return fmt.Errorf("cannot write main.go: %w", err)
 	}
 
-	// Write fixed go.mod - go mod tidy will remove unused dependencies
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goModTemplate), 0644); err != nil {
+	// Write go.mod - go mod tidy will remove unused dependencies
+	if err := writeGoMod(dir); err != nil {
 		return fmt.Errorf("cannot write go.mod: %w", err)
 	}
 
@@ -192,7 +228,7 @@ func execInDirWithStatic(dir, goSource, outputPath string, static bool) error {
 	tidy.Stdout = nil
 	tidy.Stderr = nil
 	if err := tidy.Run(); err != nil {
-		return fmt.Errorf("go mod tidy failed: %w", err)
+		return tidyHint(err)
 	}
 
 	// go build -o output main.go
@@ -245,8 +281,8 @@ func execInDirWithArgs(dir, goSource, mode string, args []string, extra ...strin
 		return fmt.Errorf("cannot write main.go: %w", err)
 	}
 
-	// Write fixed go.mod - go mod tidy will remove unused dependencies
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goModTemplate), 0644); err != nil {
+	// Write go.mod - go mod tidy will remove unused dependencies
+	if err := writeGoMod(dir); err != nil {
 		return fmt.Errorf("cannot write go.mod: %w", err)
 	}
 
@@ -256,7 +292,7 @@ func execInDirWithArgs(dir, goSource, mode string, args []string, extra ...strin
 	tidy.Stdout = nil
 	tidy.Stderr = nil
 	if err := tidy.Run(); err != nil {
-		return fmt.Errorf("go mod tidy failed: %w", err)
+		return tidyHint(err)
 	}
 
 	if mode == "run" {

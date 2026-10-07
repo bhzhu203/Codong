@@ -1,0 +1,20 @@
+// 键盘探针：把每个按下的键名打到 stdout，用于排查按键事件流。
+
+last = "-"
+view = fn(c) {
+    k = mygo.key(c)
+    while k != "" {
+        print("KEY {k}")
+        last = k
+        k = mygo.key(c)
+    }
+    if mygo.key(c, "space") { print("KEY space") }
+    if mygo.key(c, "up") { print("KEY up") }
+    mygo.column(c, fn() {
+        mygo.text(c, "last: {last}", size: 16)
+        if mygo.button(c, "clickme") { print("CLICKED") }
+        mygo.text(c, "probe", size: 12, muted: true, selectable: true)
+    }, padding: 12)
+}
+
+mygo.run(view, title: "keyprobe", width: 320, height: 140)

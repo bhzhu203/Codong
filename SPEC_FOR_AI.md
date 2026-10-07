@@ -542,6 +542,8 @@ n = [1, 2, 3].len()
 
 **Built-in modules:** `web`, `db`, `http`, `llm`, `fs`, `json`, `env`, `time`, `redis`, `image`, `oauth`, `agent`, `cloud`, `queue`, `cron`, `error` — no import needed.
 
+**Native UI modules:** `mygo` (desktop UI — see §21; needs Go >= 1.27.1), `gui`, `draw`, `tui`, `webview` — also no import, but only emit their runtime when actually used (programs that don't use them keep the minimal binary size).
+
 ```
 // CORRECT — built-in modules used directly
 server = web.serve(port: 8080)
@@ -1655,6 +1657,108 @@ try {
 
 ---
 
+## 21. mygo Module — Native Desktop UI
+
+> **GENERATION RULE — tell the user before using mygo: it needs Go >= 1.27.1.**
+> The `mygo` module builds against `github.com/egoist/mygo`, whose go.mod
+> declares `go 1.27.1`. Codong writes `go 1.27.1` into the generated go.mod
+> (instead of the usual `go 1.22`, so building the program needs that
+> toolchain). With the default `GOTOOLCHAIN=auto` the `go` command downloads
+> the toolchain itself when a module proxy is reachable; on an offline or
+> locked-down machine the user must upgrade Go first. When you generate a
+> mygo program, say so once so the user is not surprised by the build.
+> Everything else is automatic: mygo is **pure Go (no cgo, no gcc)**, the
+> binary builds static, and the hello-world baseline is untouched for
+> programs that don't use it. Works on Linux (GTK3 + Pango), macOS and
+> Windows; on a machine with no Chinese font, CJK text falls back to the
+> system's fontconfig (Linux) so install one if Chinese text matters.
+
+mygo is a declarative, per-frame native UI toolkit (think SwiftUI): `mygo.run(view)` blocks on the event loop and calls `view(c)` again after every input, rebuilding the interface from the current state. State lives in variables closed over by `view`; stateful widgets return their current value so the caller keeps it.
+
+```markdown
+// CORRECT — the model: view is a function of state
+n = 0
+checked = false
+mygo.run(fn(c) {
+    mygo.column(c, fn() {
+        mygo.text(c, "Count: {n}", size: 40, bold: true)
+        if mygo.button(c, "+", primary: true) {
+            n = n + 1
+        }
+    }, fill: true, center: true, gap: 16)
+}, title: "Counter", width: 360, height: 260)
+```
+
+**Window / frame API:**
+
+| Call | Meaning |
+|------|---------|
+| `mygo.run(view, title:, width:, height:)` | Open the window and block; `view = fn(c)` builds each frame |
+| `mygo.quit(c)` | Exit the application |
+| `mygo.set_title(c, "text")` | Change the window title |
+| `mygo.theme(c)` | Map of theme colors: `{dark, text, muted, surface, background, accent}` (hex strings) |
+| `mygo.key(c)` | Next queued key as a string, `""` when the queue is empty — see the keyboard notes below |
+| `mygo.key(c, "enter")` | True in the frame the key was pressed (the same names, plus `up` `down` `left` `right` `space` `tab`) |
+
+> **Keyboard notes** — `mygo.key(c)` consumes ONE key per call, so drain the queue every frame:
+> `k = mygo.key(c)` / `while k != "" { handle(k); k = mygo.key(c) }`.
+> It reports these names: `0`-`9` `.` `+` `-` `*` `/` `=` `enter` `backspace` `escape` `delete` `c`.
+> When several keys arrive in one frame it answers in that fixed check order, which only matters for keyboard-repeat bursts, not typing speed.
+> Focus does not swallow keys: even when an input or a selectable text has focus, keys still reach `mygo.key` — except Ctrl+C and Ctrl+A, which copy/select the focused text.
+> `+` and `*` come from both keyboards: the main one types them with Shift on most layouts, the numpad sends them bare. Numpad digits, `.` and Enter work too (with NumLock on, as in any application). The Codong build applies small key-mapping fixes to mygo for this; nothing to configure.
+
+**Containers** (second argument is `fn()` with the children; layout options below):
+
+```
+mygo.column(c, fn() { ... })                 // vertical stack
+mygo.row(c, fn() { ... })                    // horizontal stack
+mygo.scroll(c, fn() { ... }, grow: 1)        // scrollable area
+mygo.spacer(c)                               // flexible space (grows)
+mygo.divider(c)                              // horizontal rule
+```
+
+**Layout options** (named args on containers and widgets): `fill: true`, `center: true`, `gap: 12`, `width: 300`, `height: 200`, `grow: 1`, `padding: 12`.
+
+**Widgets:**
+
+```
+// Text — size, bold, italic, color (hex), muted (theme color), width,
+//        align ("start" | "center" | "end"), fill (stretch to full width),
+//        selectable (mouse-drag select; Ctrl+C or right-click → Copy/Select All)
+mygo.text(c, "Hello {name}", size: 16, color: "#2563eb")
+mygo.text(c, "hint", muted: true)
+mygo.text(c, display, size: 30, bold: true, align: "end", fill: true, selectable: true)
+
+// Button — returns true in the frame it was clicked
+if mygo.button(c, "Save") { save() }
+mygo.button(c, "Delete", primary: false, disabled: n == 0)
+
+// Link — opens the URL in the system browser
+mygo.link(c, "Homepage", "https://codong.org")
+
+// Progress bar — value 0..1
+mygo.progress(c, done / total, width: 200)
+
+// Image — file path, decoded once
+mygo.image(c, "./logo.png", width: 64, height: 64)
+```
+
+**Stateful widgets** — assign the result back; the variable is the state:
+
+```
+// CORRECT — keep the returned value
+checked = mygo.checkbox(c, checked, "Enable")
+on = mygo.switch(c, on)
+v = mygo.slider(c, v, lo: 0, hi: 100)
+text = mygo.input(c, text, placeholder: "type here", on_submit: fn(t) { print(t) })
+body = mygo.text_area(c, body, width: 480, height: 160)
+
+// WRONG — discarding the value loses the user's input
+mygo.input(c, text)
+```
+
+---
+
 ## Quick Reference: Unique Syntax Rules
 
 | Scenario | Codong Way | NOT Allowed |
@@ -1690,6 +1794,8 @@ try {
 | Multiple returns | `return {a: 1, b: 2}` | `return a, b` |
 | Length | `x.len()` | `len(x)` |
 | Static build | `codong build -static app.cod` | `codong build app.cod` (dynamic) |
+| Desktop UI | `mygo.run(fn(c) { ... }, title: "App")` | Electron, Tauri, `tkinter`, per-frame re-render is automatic |
+| Desktop UI note | `mygo` needs Go >= 1.27.1 (see §21) | assuming the usual Go 1.22 baseline |
 
 ---
 

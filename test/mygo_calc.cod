@@ -1,0 +1,194 @@
+// mygo 计算器 — Codong + mygo 原生 UI。
+// 运行：codong run test/mygo_calc.cod（需要 Go >= 1.27.1）
+// 键盘：数字 . + - * / = enter backspace/delete（esc 或 c 清零）
+// 顶部算式行可用鼠标拖选并复制（右键 Copy 或 Ctrl+C）。
+
+display = "0"   // 当前输入 / 结果（文本）
+expr = ""       // 当前数字之前的算式前缀，完成态以 "=" 结尾
+acc = 0.0       // 待运算的左操作数
+op = ""         // 待执行的运算符："+" "-" "*" "/"
+fresh = true    // 下一次数字输入是否重新开始
+
+digit = fn(d) {
+    if fresh {
+        if expr.contains("=") { expr = "" }
+        display = d
+        fresh = false
+    } else {
+        if display == "0" {
+            display = d
+        } else {
+            display = "{display}{d}"
+        }
+    }
+}
+
+dot = fn() {
+    if fresh {
+        if expr.contains("=") { expr = "" }
+        display = "0."
+        fresh = false
+    } else {
+        if !display.contains(".") {
+            display = "{display}."
+        }
+    }
+}
+
+clear_all = fn() {
+    display = "0"
+    expr = ""
+    acc = 0.0
+    op = ""
+    fresh = true
+}
+
+back = fn() {
+    if display == "错误" {
+        clear_all()
+        return
+    }
+    if fresh {
+        fresh = false
+        if expr.contains("=") { expr = "" }
+    }
+    if display.len() > 1 {
+        display = display.slice(0, display.len() - 1)
+    } else {
+        display = "0"
+    }
+}
+
+apply = fn() {
+    b = float(display)
+    if op == "+" { display = "{acc + b}" }
+    if op == "-" { display = "{acc - b}" }
+    if op == "*" { display = "{acc * b}" }
+    if op == "/" {
+        if b == 0 {
+            display = "错误"
+        } else {
+            display = "{acc / b}"
+        }
+    }
+}
+
+op_key = fn(o) {
+    if expr.contains("=") {
+        if display == "错误" { return }
+        expr = "{display}{o}"
+        acc = float(display)
+        op = o
+        fresh = true
+        return
+    }
+    if op != "" && !fresh {
+        expr = "{expr}{display}"
+        apply()
+        if display == "错误" {
+            expr = "{expr}="
+            op = ""
+            fresh = true
+            return
+        }
+        expr = "{expr}{o}"
+        acc = float(display)
+    } else {
+        if op != "" {
+            t = expr.slice(0, expr.len() - 1)
+            expr = "{t}{o}"
+        } else {
+            expr = "{expr}{display}{o}"
+        }
+        acc = float(display)
+    }
+    op = o
+    fresh = true
+}
+
+equals_key = fn() {
+    if expr.contains("=") { return }
+    if op != "" {
+        expr = "{expr}{display}="
+        apply()
+        op = ""
+    } else {
+        expr = "{display}="
+    }
+    fresh = true
+}
+
+apply_key = fn(k) {
+    if k == "0" { digit("0") }
+    if k == "1" { digit("1") }
+    if k == "2" { digit("2") }
+    if k == "3" { digit("3") }
+    if k == "4" { digit("4") }
+    if k == "5" { digit("5") }
+    if k == "6" { digit("6") }
+    if k == "7" { digit("7") }
+    if k == "8" { digit("8") }
+    if k == "9" { digit("9") }
+    if k == "." { dot() }
+    if k == "+" { op_key("+") }
+    if k == "-" { op_key("-") }
+    if k == "*" { op_key("*") }
+    if k == "/" { op_key("/") }
+    if k == "=" { equals_key() }
+    if k == "enter" { equals_key() }
+    if k == "backspace" { back() }
+    if k == "delete" { back() }
+    if k == "escape" { clear_all() }
+    if k == "c" { clear_all() }
+}
+
+view = fn(c) {
+    k = mygo.key(c)
+    while k != "" {
+        apply_key(k)
+        k = mygo.key(c)
+    }
+    btn = fn(label, h) {
+        if mygo.button(c, label, width: 72) {
+            h()
+        }
+    }
+    etext = expr
+    if !fresh { etext = "{expr}{display}" }
+    mygo.column(c, fn() {
+        mygo.text(c, etext, size: 13, muted: true, align: "end", fill: true, selectable: true)
+        mygo.text(c, display, size: 30, bold: true, align: "end", fill: true, selectable: true)
+        mygo.row(c, fn() {
+            btn("C", fn() { clear_all() })
+            btn("⌫", fn() { back() })
+            btn("÷", fn() { op_key("/") })
+        }, gap: 8)
+        mygo.row(c, fn() {
+            btn("7", fn() { digit("7") })
+            btn("8", fn() { digit("8") })
+            btn("9", fn() { digit("9") })
+        }, gap: 8)
+        mygo.row(c, fn() {
+            btn("4", fn() { digit("4") })
+            btn("5", fn() { digit("5") })
+            btn("6", fn() { digit("6") })
+        }, gap: 8)
+        mygo.row(c, fn() {
+            btn("1", fn() { digit("1") })
+            btn("2", fn() { digit("2") })
+            btn("3", fn() { digit("3") })
+        }, gap: 8)
+        mygo.row(c, fn() {
+            btn("0", fn() { digit("0") })
+            btn(".", fn() { dot() })
+            btn("×", fn() { op_key("*") })
+        }, gap: 8)
+        mygo.row(c, fn() {
+            btn("+", fn() { op_key("+") })
+            btn("−", fn() { op_key("-") })
+            btn("=", fn() { equals_key() })
+        }, gap: 8)
+    }, padding: 16, gap: 10)
+}
+
+mygo.run(view, title: "计算器", width: 264, height: 392)

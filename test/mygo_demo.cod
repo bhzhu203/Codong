@@ -1,0 +1,37 @@
+// mygo module demo — native desktop UI.
+// Run:  codong run test/mygo_demo.cod
+// Needs Go >= 1.27.1 (the generated go.mod declares it).
+
+count = 0
+checked = false
+name = ""
+submitted = ""
+
+view = fn(c) {
+    theme = mygo.theme(c)
+    mygo.column(c, fn() {
+        mygo.text(c, "mygo 原生 UI 演示", size: 22, bold: true)
+        mygo.text(c, "计数器：{count}", size: 16, muted: true)
+        mygo.row(c, fn() {
+            if mygo.button(c, "+1", primary: true) {
+                count = count + 1
+            }
+            if mygo.button(c, "归零", disabled: count == 0) {
+                count = 0
+            }
+        }, gap: 8)
+        mygo.divider(c)
+        checked = mygo.checkbox(c, checked, "显示问候语")
+        if checked {
+            mygo.text(c, "你好，Codong！", size: 16, color: theme.accent)
+        }
+        name = mygo.input(c, name, placeholder: "输入名字后回车", on_submit: fn(t) {
+            submitted = t
+        })
+        if submitted != "" {
+            mygo.text(c, "你好，{submitted}！", size: 16)
+        }
+    }, padding: 16, gap: 12)
+}
+
+mygo.run(view, title: "Codong + mygo", width: 480, height: 360)

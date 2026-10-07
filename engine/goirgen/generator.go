@@ -135,6 +135,11 @@ func Generate(program *parser.Program, sourceDirs ...string) string {
 	g.emitRuntime()
 	g.output.WriteString(body)
 	generateNeedsCGO = g.shouldIncludeModule("Gui") || g.shouldIncludeModule("Webview")
+	generateGoVersion = DefaultGoVersion
+	generateUsesMygo = g.shouldIncludeModule("Mygo")
+	if generateUsesMygo {
+		generateGoVersion = MygoGoVersion
+	}
 	return g.output.String()
 }
 
@@ -146,6 +151,33 @@ var generateNeedsCGO bool
 // LastGenerateNeedsCGO reports whether the last Generate call emitted a
 // fragment that requires CGO.
 func LastGenerateNeedsCGO() bool { return generateNeedsCGO }
+
+// DefaultGoVersion is the `go` directive of the generated go.mod for
+// programs that need nothing newer.
+const DefaultGoVersion = "1.22"
+
+// MygoGoVersion is the minimum Go toolchain the mygo module needs (its own
+// go.mod declares go 1.27.1), so any program using mygo must declare it too.
+const MygoGoVersion = "1.27.1"
+
+// generateGoVersion is the `go` directive written into the generated go.mod.
+// Queried by the build runner right after Generate: the mygo module requires
+// Go >= MygoGoVersion, everything else keeps the baseline.
+var generateGoVersion = DefaultGoVersion
+
+// LastGenerateGoVersion reports the `go` directive the last Generate call
+// requires for the generated go.mod.
+func LastGenerateGoVersion() string { return generateGoVersion }
+
+// generateUsesMygo records whether the most recent Generate() output pulls in
+// the mygo module. Queried by the build runner right after Generate: mygo
+// builds need a pinned require plus a replace pointing at Codong's patched
+// copy of the module.
+var generateUsesMygo bool
+
+// LastGenerateUsesMygo reports whether the last Generate call emitted output
+// that imports the mygo module.
+func LastGenerateUsesMygo() bool { return generateUsesMygo }
 
 func (g *Generator) write(s string) {
 	g.output.WriteString(strings.Repeat("\t", g.indent))
@@ -1019,6 +1051,8 @@ func (g *Generator) genMethodCall(member *parser.MemberAccessExpression, argumen
 			return g.genWebviewCall(method, args, named)
 		case "tui":
 			return g.genTuiCall(method, args, named)
+		case "mygo":
+			return g.genMygoCall(method, args, named)
 		case "encoding":
 			return g.genEncodingCall(method, args, named)
 		}
@@ -1481,6 +1515,118 @@ func (g *Generator) genTuiCall(method string, args []string, named map[string]pa
 	switch method {
 	case "run":
 		return fmt.Sprintf("cTuiRun(%s, %s, %s)", getArg(0, "nil"), getArg(1, "nil"), getArg(2, "nil"))
+	}
+	return "nil"
+}
+
+// genMygoCall compiles mygo.* namespace calls (github.com/egoist/mygo native
+// UI, pure Go). Named options become a cMygoOpts struct literal consumed by
+// the cMygo* wrappers in RuntimeMygo. The view/children/callback arguments
+// are the already-generated Codong closures.
+func (g *Generator) genMygoCall(method string, args []string, named map[string]parser.Expression) string {
+	getArg := func(i int, def string) string {
+		if i < len(args) {
+			return args[i]
+		}
+		return def
+	}
+	// mygoOpts builds a cMygoOpts literal from the named arguments, coercing
+	// each field to its Go type. Slider lo/hi (and run width/height) fall
+	// back to positional args via extraNamed.
+	mygoOpts := func(extraNamed map[string]string) string {
+		if extraNamed == nil {
+			extraNamed = map[string]string{}
+		}
+		field := func(name string, coerce string) string {
+			if v, ok := named[name]; ok {
+				return fmt.Sprintf("%s: %s(%s), ", name, coerce, g.genExpr(v))
+			}
+			if raw, ok := extraNamed[name]; ok {
+				return fmt.Sprintf("%s: %s(%s), ", name, coerce, raw)
+			}
+			return ""
+		}
+		lit := field("fill", "isTruthy") + field("center", "isTruthy") +
+			field("gap", "toFloat") + field("width", "toFloat") + field("height", "toFloat") +
+			field("grow", "toFloat") + field("padding", "toFloat") + field("size", "toFloat") +
+			field("bold", "isTruthy") + field("italic", "isTruthy") + field("color", "toString") +
+			field("muted", "isTruthy") + field("primary", "isTruthy") + field("disabled", "isTruthy") +
+			field("placeholder", "toString") + field("align", "toString") +
+			field("selectable", "isTruthy") +
+			field("lo", "toFloat") + field("hi", "toFloat")
+		return "cMygoOpts{" + lit + "}"
+	}
+	switch method {
+	case "run":
+		title := `"Codong"`
+		if len(args) > 1 {
+			title = fmt.Sprintf("toString(%s)", args[1])
+		}
+		if v, ok := named["title"]; ok {
+			title = fmt.Sprintf("toString(%s)", g.genExpr(v))
+		}
+		w, h := getArg(2, "400"), getArg(3, "300")
+		if v, ok := named["width"]; ok {
+			w = g.genExpr(v)
+		}
+		if v, ok := named["height"]; ok {
+			h = g.genExpr(v)
+		}
+		return fmt.Sprintf("cMygoRun(%s, %s, int(toFloat(%s)), int(toFloat(%s)))",
+			getArg(0, "nil"), title, w, h)
+	case "quit":
+		return "cMygoQuit()"
+	case "set_title":
+		title := getArg(1, `""`)
+		if v, ok := named["title"]; ok {
+			title = g.genExpr(v)
+		}
+		return fmt.Sprintf("cMygoSetTitle(toString(%s))", title)
+	case "theme":
+		return fmt.Sprintf("cMygoTheme(%s)", getArg(0, "nil"))
+	case "key":
+		if v, ok := named["key"]; ok {
+			return fmt.Sprintf("cMygoKey(%s, toString(%s))", getArg(0, "nil"), g.genExpr(v))
+		}
+		if len(args) >= 2 {
+			return fmt.Sprintf("cMygoKey(%s, toString(%s))", getArg(0, "nil"), args[1])
+		}
+		return fmt.Sprintf("cMygoKeys(%s)", getArg(0, "nil"))
+	case "column", "row", "scroll":
+		fn := map[string]string{"column": "cMygoColumn", "row": "cMygoRow", "scroll": "cMygoScroll"}[method]
+		return fmt.Sprintf("%s(%s, %s, %s)", fn, getArg(0, "nil"), getArg(1, "nil"), mygoOpts(nil))
+	case "spacer":
+		return fmt.Sprintf("cMygoSpacer(%s)", getArg(0, "nil"))
+	case "divider":
+		return fmt.Sprintf("cMygoDivider(%s)", getArg(0, "nil"))
+	case "text":
+		return fmt.Sprintf("cMygoText(%s, toString(%s), %s)", getArg(0, "nil"), getArg(1, `""`), mygoOpts(nil))
+	case "button":
+		return fmt.Sprintf("cMygoButton(%s, toString(%s), %s)", getArg(0, "nil"), getArg(1, `"OK"`), mygoOpts(nil))
+	case "link":
+		return fmt.Sprintf("cMygoLink(%s, toString(%s), toString(%s))", getArg(0, "nil"), getArg(1, `""`), getArg(2, `""`))
+	case "progress":
+		return fmt.Sprintf("cMygoProgress(%s, toFloat(%s), %s)", getArg(0, "nil"), getArg(1, "0"), mygoOpts(nil))
+	case "checkbox":
+		label := getArg(2, `""`)
+		if v, ok := named["label"]; ok {
+			label = g.genExpr(v)
+		}
+		return fmt.Sprintf("cMygoCheckbox(%s, %s, toString(%s), %s)", getArg(0, "nil"), getArg(1, "false"), label, mygoOpts(nil))
+	case "switch":
+		return fmt.Sprintf("cMygoSwitch(%s, %s, %s)", getArg(0, "nil"), getArg(1, "false"), mygoOpts(nil))
+	case "slider":
+		return fmt.Sprintf("cMygoSlider(%s, %s, %s)", getArg(0, "nil"), getArg(1, "0"), mygoOpts(map[string]string{"lo": getArg(2, "0"), "hi": getArg(3, "100")}))
+	case "input":
+		submit := "nil"
+		if v, ok := named["on_submit"]; ok {
+			submit = g.genExpr(v)
+		}
+		return fmt.Sprintf("cMygoInput(%s, %s, %s, %s)", getArg(0, "nil"), getArg(1, `""`), submit, mygoOpts(nil))
+	case "text_area":
+		return fmt.Sprintf("cMygoTextArea(%s, %s, %s)", getArg(0, "nil"), getArg(1, `""`), mygoOpts(nil))
+	case "image":
+		return fmt.Sprintf("cMygoImage(%s, toString(%s), %s)", getArg(0, "nil"), getArg(1, `""`), mygoOpts(nil))
 	}
 	return "nil"
 }
@@ -2110,6 +2256,7 @@ var allRuntimeModules = []runtimeModule{
 	{"Gui", GuiImports, wrapKeepAlive(GuiKeepAlive)},             // conditional; requires CGO
 	{"Webview", WebviewImports, wrapKeepAlive(WebviewKeepAlive)}, // conditional; requires CGO
 	{"Tui", TuiImports, wrapKeepAlive(TuiKeepAlive)},             // conditional; pure Go
+	{"Mygo", MygoImports, wrapKeepAlive(MygoKeepAlive)},          // conditional; pure Go; needs Go >= MygoGoVersion
 }
 
 // wrapKeepAlive converts a raw KeepAlive body (one symbol per line, with
@@ -2155,6 +2302,7 @@ var astModuleToRuntime = map[string]string{
 	"gui":      "Gui",
 	"webview":  "Webview",
 	"tui":      "Tui",
+	"mygo":     "Mygo",
 }
 
 // astModuleNames is the set of built-in module names we recognise in the AST.
@@ -2168,6 +2316,7 @@ var astModuleNames = map[string]bool{
 	"gui":     true,
 	"webview": true,
 	"tui":     true,
+	"mygo":    true,
 }
 
 // runtimeFragment returns the Go source text of a runtime module by its
@@ -2216,6 +2365,8 @@ func runtimeFragment(name string) string {
 		return frag
 	case "Tui":
 		return RuntimeTui
+	case "Mygo":
+		return RuntimeMygo
 	}
 	return ""
 }
