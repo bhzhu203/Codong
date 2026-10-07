@@ -67,12 +67,13 @@ func main() {
 		fmt.Println("codong fmt: not yet implemented (stage 1)")
 	case "build":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: codong build <file.cod> [-o output] [-static]")
+			fmt.Fprintln(os.Stderr, "Usage: codong build <file.cod> [-o output] [-static] [-bundle]")
 			os.Exit(2)
 		}
 		input := ""
 		output := ""
 		static := false
+		bundle := false
 		for i := 2; i < len(os.Args); i++ {
 			arg := os.Args[i]
 			if arg == "-o" && i+1 < len(os.Args) {
@@ -80,6 +81,8 @@ func main() {
 				i++ // skip next arg
 			} else if arg == "-static" {
 				static = true
+			} else if arg == "-bundle" {
+				bundle = true
 			} else if !strings.HasPrefix(arg, "-") {
 				input = arg
 			}
@@ -91,7 +94,13 @@ func main() {
 		if output == "" {
 			output = strings.TrimSuffix(filepath.Base(input), ".cod")
 		}
-		if err := runner.Build(input, output, static); err != nil {
+		var err error
+		if bundle {
+			err = runner.BuildBundle(input, output, static)
+		} else {
+			err = runner.Build(input, output, static)
+		}
+		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -116,7 +125,7 @@ func printUsage() {
 	fmt.Println("Commands:")
 	fmt.Println("  run <file.cod>     Run a .cod file (Go IR path)")
 	fmt.Println("  eval <file.cod>    Evaluate a .cod file (interpreter, no stdlib)")
-	fmt.Println("  build <file.cod>   Compile to binary (stage 4)")
+	fmt.Println("  build <file.cod>   Compile to binary (stage 4); -bundle packs an AppImage")
 	fmt.Println("  new <name>         Create a new project")
 	fmt.Println("  fmt [files...]     Format code")
 	fmt.Println("  version            Show version")
