@@ -1,0 +1,177 @@
+// Codong 倒计时程序 - webview 版（复杂 GUI 示例）
+// 功能：倒计时、最后 10 秒提示、到时动画 + 提示音、快捷预设
+// 说明：界面为自包含 HTML/CSS/JS，全部逻辑在页面内运行；
+//       三引号字符串内的 { } 一律写成 \{ \}（否则按插值解析）。
+
+html = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body \{ margin: 0; height: 100vh; box-sizing: border-box; background: #1a1a2e; color: #eef; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; padding: 18px 16px; \}
+h1 \{ font-size: 20px; margin: 4px 0 10px; font-weight: bold; \}
+#time \{ font-family: monospace; font-size: 52px; font-weight: bold; letter-spacing: 3px; color: #7dd3fc; margin: 6px 0 14px; min-height: 62px; text-align: center; \}
+.row \{ display: flex; gap: 14px; align-items: center; margin: 6px 0; \}
+label \{ font-size: 14px; color: #9ecbff; display: flex; align-items: center; gap: 6px; \}
+input \{ width: 62px; padding: 7px 4px; font-size: 16px; text-align: center; border-radius: 6px; border: 1px solid #3a3a66; background: #252540; color: #fff; outline: none; \}
+button \{ padding: 9px 20px; font-size: 15px; border: none; border-radius: 8px; cursor: pointer; background: #2080ff; color: white; \}
+button:hover \{ background: #3b9bff; \}
+#resetBtn \{ background: #4b5563; \}
+#resetBtn:hover \{ background: #6b7280; \}
+.presets \{ display: flex; gap: 8px; margin-top: 12px; \}
+.preset \{ padding: 6px 12px; font-size: 13px; background: #2d2d50; color: #9ecbff; border-radius: 6px; border: 1px solid #3a3a66; cursor: pointer; user-select: none; \}
+.preset:hover \{ background: #3a3a66; \}
+#status \{ margin-top: 10px; font-size: 13px; color: #fbbf24; min-height: 18px; \}
+#overlay \{ position: fixed; inset: 0; background: rgba(10, 10, 25, 0.96); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 10; \}
+#overlay .big \{ font-size: 44px; font-weight: bold; color: #fbbf24; animation: pulse 0.9s infinite alternate; \}
+#overlay p \{ color: #ccc; margin: 14px 0 22px; font-size: 16px; \}
+@keyframes pulse \{ from \{ transform: scale(1); opacity: 0.85; \} to \{ transform: scale(1.12); opacity: 1; \} \}
+</style>
+</head>
+<body>
+<h1>⏱️ Timer</h1>
+<div id="time">00:00</div>
+<div class="row">
+<label>Minutes <input id="mins" type="number" min="0" max="99" value="1"></label>
+<label>Seconds <input id="secs" type="number" min="0" max="59" value="0"></label>
+</div>
+<div class="row">
+<button id="startBtn">Start</button>
+<button id="resetBtn">Reset</button>
+</div>
+<div class="presets">
+<span class="preset" data-m="1" data-s="0">1 min</span>
+<span class="preset" data-m="5" data-s="0">5 min</span>
+<span class="preset" data-m="10" data-s="0">10 min</span>
+<span class="preset" data-m="25" data-s="0">25 min</span>
+</div>
+<div id="status"></div>
+<div id="overlay">
+<div class="big">⏰ Time is up!</div>
+<p>Your timer has finished</p>
+<button onclick="closeOverlay()">Close</button>
+</div>
+<script>
+var remaining = 0;
+var running = false;
+var intervalId = null;
+var timeEl = document.getElementById('time');
+var startBtn = document.getElementById('startBtn');
+var minsEl = document.getElementById('mins');
+var secsEl = document.getElementById('secs');
+var statusEl = document.getElementById('status');
+
+function pad(n) \{ return n < 10 ? '0' + n : '' + n; \}
+
+function render() \{
+  var m = Math.floor(remaining / 60);
+  var s = remaining % 60;
+  if (running && remaining > 0 && remaining <= 10) \{
+    timeEl.textContent = 'Last 10s: ' + pad(m) + ':' + pad(s);
+  \} else \{
+    timeEl.textContent = pad(m) + ':' + pad(s);
+  \}
+\}
+
+function flashStatus(msg) \{
+  statusEl.textContent = msg;
+  setTimeout(function() \{ statusEl.textContent = ''; \}, 2500);
+\}
+
+function beep() \{
+  try \{
+    var Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    var ctx = new Ctx();
+    [0, 0.35, 0.7].forEach(function(t) \{
+      var o = ctx.createOscillator();
+      var g = ctx.createGain();
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.frequency.value = 880;
+      g.gain.setValueAtTime(0.25, ctx.currentTime + t);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + t + 0.3);
+      o.start(ctx.currentTime + t);
+      o.stop(ctx.currentTime + t + 0.3);
+    \});
+  \} catch (e) \{ \}
+\}
+
+function timeUp() \{
+  document.getElementById('overlay').style.display = 'flex';
+  beep();
+  if (window.__cLog) window.__cLog('Time is up! Your timer has finished');
+\}
+
+function closeOverlay() \{
+  document.getElementById('overlay').style.display = 'none';
+\}
+
+function tick() \{
+  if (!running) return;
+  remaining--;
+  if (remaining <= 0) \{
+    remaining = 0;
+    running = false;
+    clearInterval(intervalId);
+    startBtn.textContent = 'Start';
+    render();
+    timeUp();
+    return;
+  \}
+  render();
+\}
+
+function toggle() \{
+  if (running) \{
+    running = false;
+    clearInterval(intervalId);
+    startBtn.textContent = 'Start';
+    flashStatus('Paused');
+    return;
+  \}
+  if (remaining <= 0) \{
+    var m = parseInt(minsEl.value, 10) || 0;
+    var s = parseInt(secsEl.value, 10) || 0;
+    remaining = m * 60 + s;
+    if (remaining <= 0) \{
+      flashStatus('Please enter valid time');
+      return;
+    \}
+  \}
+  running = true;
+  startBtn.textContent = 'Pause';
+  intervalId = setInterval(tick, 1000);
+\}
+
+function reset() \{
+  running = false;
+  clearInterval(intervalId);
+  remaining = 0;
+  startBtn.textContent = 'Start';
+  render();
+\}
+
+startBtn.onclick = toggle;
+document.getElementById('resetBtn').onclick = reset;
+var presets = document.querySelectorAll('.preset');
+for (var i = 0; i < presets.length; i++) \{
+  (function(b) \{
+    b.onclick = function() \{
+      minsEl.value = b.getAttribute('data-m');
+      secsEl.value = b.getAttribute('data-s');
+    \};
+  \})(presets[i]);
+\}
+
+render();
+</script>
+</body>
+</html>
+"""
+
+print("倒计时程序已启动")
+
+webview.html(html, "⏱️ Codong 倒计时", 500, 430)
+
+print("窗口已关闭")

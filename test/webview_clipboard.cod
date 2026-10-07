@@ -1,0 +1,118 @@
+// webview 版剪贴板管理器：与 gui 版行为一致——
+// 输入区 Shift+Enter 或点击按钮 → 复制到系统剪贴板并清空，历史区点击任意条目可再次复制。
+// 注意：三引号字符串内所有 { } 必须写成 \{ \}（否则按插值解析）。
+
+html = """
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body \{ font-family: sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; background: #1e1e1e; color: #ddd; \}
+#row \{ display: flex; gap: 8px; padding: 10px; flex: none; \}
+#iwrap \{ position: relative; flex: none; width: calc(100% - 116px); \}
+#input \{ width: 100%; height: 96px; min-height: 40px; background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 6px; padding: 8px; font-size: 14px; resize: none; box-sizing: border-box; display: block; \}
+#grip \{ position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; z-index: 5; border-radius: 3px; background: linear-gradient(135deg, transparent 0 45%, #8a93a2 45% 52%, transparent 52% 62%, #8a93a2 62% 69%, transparent 69% 79%, #8a93a2 79% 86%, transparent 86%); \}
+#grip:hover \{ background-color: #3a3f4b; \}
+#btn \{ width: 96px; height: 96px; flex: none; background: #3b82f6; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; \}
+#status \{ margin: 0 10px 6px; font-size: 13px; color: #9ca3af; flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; \}
+#bar \{ height: 8px; margin: 0 10px 8px; background: #4b5563; border-radius: 4px; cursor: pointer; flex: none; display: none; \}
+#bar:hover \{ background: #6b7280; \}
+#hist \{ flex: 1; overflow-y: auto; padding: 4px 10px 10px; \}
+.item \{ background: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; \}
+.item:hover \{ background: #3a3a3a; \}
+</style>
+</head>
+<body>
+<div id="row">
+<div id="iwrap">
+<textarea id="input" placeholder="在此输入文字…（Shift+Enter 复制并清空）"></textarea>
+<div id="grip"></div>
+</div>
+<button id="btn">复制并清空</button>
+</div>
+<div id="status">已复制 0 条</div>
+<div id="bar"></div>
+<div id="hist"></div>
+<script>
+var hist = [];
+var histOpen = false;
+function $(id) \{ return document.getElementById(id); \}
+function copyText(t) \{
+    var ta = document.createElement('textarea');
+    ta.value = t;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+\}
+function stripH(extra) \{
+    return 20 + $('row').offsetHeight + $('status').offsetHeight + 6 + extra;
+\}
+function submit() \{
+    var t = $('input').value;
+    if (!t) \{ return; \}
+    copyText(t);
+    hist.unshift(t);
+    $('input').value = '';
+    if (hist.length == 1 && !histOpen) \{ __cResize(560, stripH(16)); \}
+    render();
+\}
+function flip() \{
+    histOpen = !histOpen;
+    $('hist').style.display = histOpen ? 'block' : 'none';
+    __cResize(560, histOpen ? 440 : (hist.length ? stripH(16) : stripH(0)));
+\}
+function render() \{
+    $('status').textContent = '已复制 ' + hist.length + ' 条';
+    if (hist.length == 1) \{ $('bar').style.display = 'block'; \}
+    var box = $('hist');
+    box.innerHTML = '';
+    hist.forEach(function(t) \{
+        var d = document.createElement('div');
+        d.className = 'item';
+        d.textContent = t;
+        d.title = t;
+        d.onclick = function() \{ copyText(t); $('status').textContent = '已重新复制：' + t; \};
+        box.appendChild(d);
+    \});
+\}
+$('btn').onclick = submit;
+$('bar').onclick = flip;
+var dragging = false, sx = 0, sy = 0, sw = 0, sh = 0;
+$('grip').addEventListener('pointerdown', function(e) \{
+    dragging = true;
+    sx = e.clientX; sy = e.clientY;
+    var r = $('iwrap').getBoundingClientRect();
+    sw = r.width; sh = r.height;
+    $('grip').setPointerCapture(e.pointerId);
+    e.preventDefault();
+\});
+$('grip').addEventListener('pointermove', function(e) \{
+    if (!dragging) \{ return; \}
+    var w = sw + (e.clientX - sx);
+    var h = sh + (e.clientY - sy);
+    if (w < 160) \{ w = 160; \}
+    if (w > window.innerWidth - 130) \{ w = window.innerWidth - 130; \}
+    if (h < 40) \{ h = 40; \}
+    if (h > 420) \{ h = 420; \}
+    $('iwrap').style.width = w + 'px';
+    $('input').style.height = h + 'px';
+    $('btn').style.height = h + 'px';
+    if (!histOpen) \{
+        __cResize(window.innerWidth, stripH(0));
+    \}
+\});
+$('grip').addEventListener('pointerup', function() \{ dragging = false; \});
+$('input').addEventListener('keydown', function(e) \{
+    if (e.key == 'Enter' && e.shiftKey) \{ e.preventDefault(); submit(); \}
+\});
+</script>
+</body>
+</html>
+"""
+
+webview.html(html, "剪贴板管理器 - webview", 560, 140)

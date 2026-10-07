@@ -1,0 +1,24 @@
+// Codong draw + web 组合测试：用 draw 画图表，通过 web.bytes() 以 image/png 返回
+
+chart = fn() {
+    c = draw.canvas(w: 640, h: 360)
+    c.background("#ffffff")
+    c.text("live chart", x: 320, y: 24, color: "#0f172a")
+    c.line(x1: 60, y1: 40, x2: 60, y2: 320, color: "#94a3b8", width: 2)
+    c.line(x1: 60, y1: 320, x2: 600, y2: 320, color: "#94a3b8", width: 2)
+    c.rect(x: 90, y: 180, w: 60, h: 140, fill: "#2080ff")
+    c.rect(x: 180, y: 120, w: 60, h: 200, fill: "#2080ff")
+    c.rect(x: 270, y: 210, w: 60, h: 110, fill: "#2080ff")
+    c.circle(x: 450, y: 100, r: 30, fill: "#ff7a1a")
+    return c.png()
+}
+
+web.get("/chart", fn(req) {
+    return web.bytes(chart(), "image/png")
+})
+
+web.get("/", fn(req) {
+    return web.html("<h1>draw+web chart server</h1><img src=\"/chart\">")
+})
+
+web.serve(8091)

@@ -172,6 +172,9 @@ func buildGoSource(goSource, outputPath string, static bool) error {
 }
 
 func execInDirWithStatic(dir, goSource, outputPath string, static bool) error {
+	// GUI/webview fragments need CGO; everything else builds pure-static.
+	cgo := goirgen.LastGenerateNeedsCGO()
+
 	// Write main.go
 	mainFile := filepath.Join(dir, "main.go")
 	if err := os.WriteFile(mainFile, []byte(goSource), 0644); err != nil {
@@ -195,14 +198,24 @@ func execInDirWithStatic(dir, goSource, outputPath string, static bool) error {
 	// go build -o output main.go
 	// Use -ldflags for static linking on supported platforms
 	var cmd *exec.Cmd
-	if static {
+	switch {
+	case cgo:
+		// CGO build (gui/webview): keep dynamic linking, still strip debug info
+		if _, err := exec.LookPath("gcc"); err != nil {
+			if _, err2 := exec.LookPath("cc"); err2 != nil {
+				return fmt.Errorf("gui 模块需要 CGO 工具链：请先安装 gcc（例如 sudo apt install build-essential 或 sudo pacman -S base-devel）")
+			}
+		}
+		cmd = exec.Command("go", "build", "-ldflags", "-s -w", "-o", outputPath, "main.go")
+		cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
+	case static:
 		// Static compilation: use -ldflags to link statically
 		// -s -w: strip debug info
 		// -extldflags "-static": tell external linker to link statically
 		// CGO_ENABLED=0: disable CGO for pure Go static binary
 		cmd = exec.Command("go", "build", "-ldflags", "-s -w -extldflags '-static'", "-o", outputPath, "main.go")
 		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
-	} else {
+	default:
 		// Normal build: strip debug info and disable CGO to reduce binary size
 		cmd = exec.Command("go", "build", "-ldflags", "-s -w", "-o", outputPath, "main.go")
 		cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
@@ -251,6 +264,9 @@ func execInDirWithArgs(dir, goSource, mode string, args []string, extra ...strin
 		goArgs := append([]string{"run", "main.go"}, args...)
 		cmd := exec.Command("go", goArgs...)
 		cmd.Dir = dir
+		if goirgen.LastGenerateNeedsCGO() {
+			cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
+		}
 		cmd.Stdout = os.Stdout
 		cmd.Stdin = os.Stdin
 		var stderrBuf bytes.Buffer

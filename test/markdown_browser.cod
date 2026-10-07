@@ -1,0 +1,277 @@
+// Markdown 浏览器（webview 版）：左边编辑、右边渲染，支持粘贴 / 编辑 / 渲染 / 显示
+// 用法：
+//   codong run test/markdown_browser.cod                  # 打开内置示例文档
+//   codong run test/markdown_browser.cod -- notes.md      # 打开指定 .md 文件（关联打开）
+// 文件关联：用 test/mdview.sh + test/mdview.desktop，然后执行
+//   xdg-mime default mdview.desktop text/markdown
+// 注意：三引号字符串内所有 { } 必须写成 \{ \}（否则按插值解析）。
+
+path = ""
+all_args = args.all()
+if all_args.len() > 0 {
+    path = all_args[0]
+}
+
+content = """# 欢迎使用 Markdown 浏览器
+
+左边 **编辑**，右边 **渲染**，实时预览。
+
+## 功能
+
+- 粘贴：点顶栏「粘贴」按钮，或在编辑区直接 Ctrl+V
+- 编辑：Tab 缩进两格，Shift+Tab 反缩进
+- 渲染：标题 / 列表 / 引用 / 表格 / 代码块 / 链接 / 图片
+- 关联打开：`codong run test/markdown_browser.cod -- file.md`
+
+> 试试在左侧修改文字，右侧预览会实时更新。
+
+| 语法 | 示例 |
+| --- | --- |
+| 粗体 | **加粗** |
+| 行内代码 | `code` |
+
+```go
+func main() \{
+    fmt.Println("Hello, Codong!")
+\}
+```
+"""
+
+title = "Markdown 浏览器"
+file_name = "(未命名)"
+
+if path != "" && fs.exists(path) {
+    content = fs.read(path)
+    file_name = fs.basename(path)
+    title = file_name + " - Markdown 浏览器"
+} else if path != "" {
+    content = "> ⚠️ 文件不存在：`" + path + "`\n\n" + content
+    title = "文件不存在 - Markdown 浏览器"
+}
+
+content_json = json.stringify(content).replace("</script", "<\\/script")
+file_json = json.stringify(file_name)
+title_json = json.stringify(title)
+
+html = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body \{ font-family: sans-serif; margin: 0; height: 100vh; display: flex; flex-direction: column; background: #1e1e1e; color: #ddd; \}
+#top \{ display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #333; flex: none; \}
+#fname \{ font-size: 14px; color: #7dd3fc; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; \}
+button \{ background: #3b82f6; color: white; border: none; border-radius: 5px; padding: 5px 14px; font-size: 13px; cursor: pointer; flex: none; \}
+button:hover \{ background: #2563eb; \}
+#clear \{ background: #4b5563; \}
+#status \{ margin-left: auto; font-size: 12px; color: #9ca3af; white-space: nowrap; \}
+#main \{ flex: 1; display: flex; min-height: 0; \}
+#editor \{ width: 50%; box-sizing: border-box; background: #252526; color: #e8e8e8; border: none; border-right: 1px solid #333; padding: 14px; font-family: monospace; font-size: 14px; line-height: 1.6; resize: none; outline: none; \}
+#preview \{ width: 50%; box-sizing: border-box; overflow-y: auto; padding: 14px 22px; background: #1e1e1e; \}
+#preview h1, #preview h2 \{ border-bottom: 1px solid #333; padding-bottom: 6px; \}
+#preview h1 \{ font-size: 26px; color: #f0f0f0; \}
+#preview h2 \{ font-size: 21px; color: #e5e5e5; \}
+#preview h3 \{ font-size: 17px; \}
+#preview a \{ color: #7dd3fc; \}
+#preview code \{ background: #2d2d30; border-radius: 4px; padding: 1px 5px; font-family: monospace; font-size: 13px; color: #ce9178; \}
+#preview pre \{ background: #2d2d30; border-radius: 6px; padding: 12px; overflow-x: auto; \}
+#preview pre code \{ background: none; padding: 0; color: #d4d4d4; \}
+#preview blockquote \{ margin: 8px 0; padding: 4px 14px; border-left: 3px solid #3b82f6; color: #9ca3af; background: #252526; \}
+#preview table \{ border-collapse: collapse; margin: 10px 0; \}
+#preview th, #preview td \{ border: 1px solid #444; padding: 6px 12px; font-size: 14px; \}
+#preview th \{ background: #2d2d30; \}
+#preview img \{ max-width: 100%; \}
+#preview hr \{ border: none; border-top: 1px solid #444; margin: 14px 0; \}
+</style>
+</head>
+<body>
+<div id="top">
+<span id="fname"></span>
+<button id="paste">粘贴</button>
+<button id="clear">清空</button>
+<span id="status"></span>
+</div>
+<div id="main">
+<textarea id="editor" spellcheck="false" placeholder="在左侧输入或粘贴 Markdown，右侧实时预览…"></textarea>
+<div id="preview"></div>
+</div>
+<script>
+var src = {content_json};
+var fileName = {file_json};
+var winTitle = {title_json};
+document.title = winTitle;
+function $(id) \{ return document.getElementById(id); \}
+$('fname').textContent = fileName;
+
+function esc(s) \{
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+\}
+
+// 行内格式：先保护行内代码，再处理图片/链接/粗体/斜体/删除线
+function inline(s) \{
+    var codes = [];
+    s = s.replace(/`([^`]+)`/g, function(m, c) \{
+        codes.push(c);
+        return '\\u0000' + (codes.length - 1) + '\\u0000';
+    \});
+    s = s.replace(/!\[([^\]]*)\]\(([^)\\s]+)\)/g, '<img src="$2" alt="$1">');
+    s = s.replace(/\[([^\]]+)\]\(([^)\\s]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+    s = s.replace(/\\*\\*([^*]+)\\*\\*/g, '<b>$1</b>');
+    s = s.replace(/__([^_]+)__/g, '<b>$1</b>');
+    s = s.replace(/~~([^~]+)~~/g, '<s>$1</s>');
+    s = s.replace(/\\*([^*\\n]+)\\*/g, '<i>$1</i>');
+    s = s.replace(/_([^_\\n]+)_/g, '<i>$1</i>');
+    s = s.replace(/\\u0000(\\d+)\\u0000/g, function(m, i) \{
+        return '<code>' + esc(codes[+i]) + '</code>';
+    \});
+    return s;
+\}
+
+// 块级解析：代码块 / 标题 / 分隔线 / 引用 / 表格 / 列表 / 段落
+function md(text) \{
+    var lines = text.replace(/\\r\\n?/g, '\\n').split('\\n');
+    var out = [];
+    var para = [];
+    function flush() \{
+        if (para.length > 0) \{
+            out.push('<p>' + para.map(inline).join('<br>') + '</p>');
+            para = [];
+        \}
+    \}
+    var i = 0;
+    while (i < lines.length) \{
+        var line = lines[i];
+        if (/^```/.test(line)) \{
+            flush();
+            var buf = [];
+            i++;
+            while (i < lines.length && !/^```/.test(lines[i])) \{ buf.push(lines[i]); i++; \}
+            i++;
+            out.push('<pre><code>' + esc(buf.join('\\n')) + '</code></pre>');
+            continue;
+        \}
+        var h = line.match(/^(#\{1,6\})\\s+(.*)$/);
+        if (h) \{
+            flush();
+            var lv = h[1].length;
+            out.push('<h' + lv + '>' + inline(esc(h[2])) + '</h' + lv + '>');
+            i++;
+            continue;
+        \}
+        if (/^\\s*(-\{3,\}|\\*\{3,\})\\s*$/.test(line)) \{ flush(); out.push('<hr>'); i++; continue; \}
+        if (/^>\\s?/.test(line)) \{
+            flush();
+            var q = [];
+            while (i < lines.length && /^>\\s?/.test(lines[i])) \{ q.push(lines[i].replace(/^>\\s?/, '')); i++; \}
+            out.push('<blockquote>' + md(q.join('\\n')) + '</blockquote>');
+            continue;
+        \}
+        if (line.indexOf('|') >= 0 && i + 1 < lines.length && lines[i+1].indexOf('|') >= 0 && /^[\\s|:\\-]+$/.test(lines[i+1])) \{
+            flush();
+            function cells(row) \{
+                return row.replace(/^\\s*\|/, '').replace(/\|\\s*$/, '').split('|').map(function(c) \{ return c.trim(); \});
+            \}
+            var head = cells(line);
+            i += 2;
+            var rows = [];
+            while (i < lines.length && lines[i].indexOf('|') >= 0 && lines[i].trim() != '') \{ rows.push(cells(lines[i])); i++; \}
+            var t = '<table><tr>';
+            head.forEach(function(c) \{ t += '<th>' + inline(esc(c)) + '</th>'; \});
+            t += '</tr>';
+            rows.forEach(function(r) \{
+                t += '<tr>';
+                r.forEach(function(c) \{ t += '<td>' + inline(esc(c)) + '</td>'; \});
+                t += '</tr>';
+            \});
+            out.push(t + '</table>');
+            continue;
+        \}
+        if (/^\\s*[-*+]\\s+/.test(line)) \{
+            flush();
+            var items = [];
+            while (i < lines.length && /^\\s*[-*+]\\s+/.test(lines[i])) \{ items.push(lines[i].replace(/^\\s*[-*+]\\s+/, '')); i++; \}
+            out.push('<ul>' + items.map(function(x) \{ return '<li>' + inline(esc(x)) + '</li>'; \}).join('') + '</ul>');
+            continue;
+        \}
+        if (/^\\s*\\d+\\.\\s+/.test(line)) \{
+            flush();
+            var oitems = [];
+            while (i < lines.length && /^\\s*\\d+\\.\\s+/.test(lines[i])) \{ oitems.push(lines[i].replace(/^\\s*\\d+\\.\\s+/, '')); i++; \}
+            out.push('<ol>' + oitems.map(function(x) \{ return '<li>' + inline(esc(x)) + '</li>'; \}).join('') + '</ol>');
+            continue;
+        \}
+        if (line.trim() == '') \{ flush(); i++; continue; \}
+        para.push(esc(line));
+        i++;
+    \}
+    flush();
+    return out.join('\\n');
+\}
+
+var ed = $('editor');
+ed.value = src;
+
+function render() \{
+    $('preview').innerHTML = md(ed.value);
+    var t = ed.value;
+    $('status').textContent = fileName + ' · ' + t.length + ' 字符 · ' + t.split('\\n').length + ' 行';
+\}
+render();
+
+var timer = null;
+ed.addEventListener('input', function() \{
+    if (timer) \{ clearTimeout(timer); \}
+    timer = setTimeout(render, 120);
+\});
+
+// Tab 缩进两格 / Shift+Tab 反缩进
+ed.addEventListener('keydown', function(e) \{
+    if (e.key != 'Tab') \{ return; \}
+    e.preventDefault();
+    var s = ed.selectionStart;
+    var en = ed.selectionEnd;
+    if (e.shiftKey) \{
+        var v = ed.value;
+        var ls = v.lastIndexOf('\\n', s - 1) + 1;
+        var m2 = v.slice(ls, ls + 2).match(/^ \{1,2\}/);
+        if (m2) \{ ed.setRangeText('', ls, ls + m2[0].length, 'end'); \}
+    \} else \{
+        ed.setRangeText('  ', s, en, 'end');
+    \}
+\});
+
+function insertAtCursor(t) \{
+    if (!t) \{ return; \}
+    var s = ed.selectionStart;
+    var en = ed.selectionEnd;
+    ed.setRangeText(t, s, en, 'end');
+    render();
+\}
+
+// 粘贴按钮：优先走原生桥 __cClipboardRead（webview），其次 Web API，失败则提示用 Ctrl+V
+$('paste').onclick = function() \{
+    if (window.__cClipboardRead) \{
+        __cClipboardRead().then(function(t) \{
+            if (t) \{ insertAtCursor(t); \} else \{ hintPaste(); \}
+        \}).catch(function() \{ hintPaste(); \});
+    \} else if (navigator.clipboard && navigator.clipboard.readText) \{
+        navigator.clipboard.readText().then(insertAtCursor).catch(function() \{ hintPaste(); \});
+    \} else \{ hintPaste(); \}
+\};
+
+function hintPaste() \{
+    ed.focus();
+    $('status').textContent = '无法直接读取剪贴板，请在编辑区按 Ctrl+V';
+\}
+
+$('clear').onclick = function() \{
+    ed.value = '';
+    render();
+    ed.focus();
+\};
+</script>
+</body>
+</html>
+"""
+
+webview.html(html, title, 1080, 680)

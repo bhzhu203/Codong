@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Markdown 浏览器
+Comment=查看和编辑 Markdown 文件（左编辑右渲染）
+Exec=/home/bhzhu/source/Codong/test/mdview.sh %F
+Icon=text-x-generic
+MimeType=text/markdown;
+Terminal=false
+NoDisplay=true

@@ -1,0 +1,10 @@
+// Codong webview 模块测试：HTML/CSS 窗口壳
+// 注意：Codong 字符串里的 {} 是插值语法，CSS 一律用内联 style 避免
+
+html = "<html><body style='background:#1a1a2e;color:#eef;font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:90vh;margin:0'><h1 style='color:#7dd3fc'>你好 Codong WebView</h1><p>HTML + CSS 界面，1.7MB 窗口壳</p><button style='padding:10px 24px;font-size:16px;border-radius:8px;border:0;background:#2080ff;color:white;cursor:pointer' onclick='document.title=\"CLICKED\"'>点我</button></body></html>"
+
+print("opening webview window...")
+
+webview.html(html, "Codong WebView Demo", 560, 380)
+
+print("window closed")

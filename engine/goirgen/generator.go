@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/codong-lang/codong/engine/lexer"
@@ -133,8 +134,18 @@ func Generate(program *parser.Program, sourceDirs ...string) string {
 	g.output.Reset()
 	g.emitRuntime()
 	g.output.WriteString(body)
+	generateNeedsCGO = g.shouldIncludeModule("Gui") || g.shouldIncludeModule("Webview")
 	return g.output.String()
 }
+
+// generateNeedsCGO records whether the most recent Generate() output requires
+// CGO (the gui and webview fragments). Queried by the build runner right
+// after Generate to pick the right build flags.
+var generateNeedsCGO bool
+
+// LastGenerateNeedsCGO reports whether the last Generate call emitted a
+// fragment that requires CGO.
+func LastGenerateNeedsCGO() bool { return generateNeedsCGO }
 
 func (g *Generator) write(s string) {
 	g.output.WriteString(strings.Repeat("\t", g.indent))
@@ -1000,6 +1011,14 @@ func (g *Generator) genMethodCall(member *parser.MemberAccessExpression, argumen
 			return g.genImageCall(method, args, named)
 		case "oauth":
 			return g.genOAuthCall(method, args, named)
+		case "draw":
+			return g.genDrawCall(method, args, named)
+		case "gui":
+			return g.genGuiCall(method, args, named)
+		case "webview":
+			return g.genWebviewCall(method, args, named)
+		case "tui":
+			return g.genTuiCall(method, args, named)
 		case "encoding":
 			return g.genEncodingCall(method, args, named)
 		}
@@ -1355,6 +1374,164 @@ func (g *Generator) genImageCall(method string, args []string, named map[string]
 		if len(args) >= 2 {
 			return fmt.Sprintf("cImageCreate(%s, %s, \"#ffffff\")", args[0], args[1])
 		}
+	}
+	return "nil"
+}
+
+// genGuiCall compiles gui.* namespace calls into the Fyne-backed runtime.
+// Numeric args arrive as float64 literals, so they are coerced via
+// int(toFloat(...)); string args via toString(...).
+func (g *Generator) genGuiCall(method string, args []string, named map[string]parser.Expression) string {
+	switch method {
+	case "init":
+		title, w, h := `"Codong"`, "400", "300"
+		if len(args) > 0 {
+			title = fmt.Sprintf("toString(%s)", args[0])
+		}
+		if len(args) > 1 {
+			w = fmt.Sprintf("int(toFloat(%s))", args[1])
+		}
+		if len(args) > 2 {
+			h = fmt.Sprintf("int(toFloat(%s))", args[2])
+		}
+		if named != nil {
+			if v, ok := named["title"]; ok {
+				title = fmt.Sprintf("toString(%s)", g.genExpr(v))
+			}
+			if v, ok := named["width"]; ok {
+				w = fmt.Sprintf("int(toFloat(%s))", g.genExpr(v))
+			}
+			if v, ok := named["height"]; ok {
+				h = fmt.Sprintf("int(toFloat(%s))", g.genExpr(v))
+			}
+		}
+		return fmt.Sprintf("cGuiInit(%s, %s, %s)", title, w, h)
+	case "show_label":
+		if len(args) == 0 {
+			return `cGuiShowLabel("")`
+		}
+		return fmt.Sprintf("cGuiShowLabel(toString(%s))", args[0])
+	case "show_button":
+		msg, text := `""`, `"OK"`
+		if len(args) > 0 {
+			msg = fmt.Sprintf("toString(%s)", args[0])
+		}
+		if len(args) > 1 {
+			text = fmt.Sprintf("toString(%s)", args[1])
+		}
+		return fmt.Sprintf("cGuiShowButton(%s, %s)", msg, text)
+	case "label":
+		if len(args) == 0 {
+			return `cGuiNewLabel("")`
+		}
+		return fmt.Sprintf("cGuiNewLabel(toString(%s))", args[0])
+	case "button":
+		text, fn := `"OK"`, "nil"
+		if len(args) > 0 {
+			text = fmt.Sprintf("toString(%s)", args[0])
+		}
+		if len(args) > 1 {
+			fn = args[1]
+		}
+		return fmt.Sprintf("cGuiNewButton(%s, %s)", text, fn)
+	case "entry":
+		if len(args) == 0 {
+			return `cGuiNewEntry("")`
+		}
+		return fmt.Sprintf("cGuiNewEntry(toString(%s))", args[0])
+	case "entry_multi":
+		if len(args) == 0 {
+			return `cGuiNewEntryMulti("")`
+		}
+		return fmt.Sprintf("cGuiNewEntryMulti(toString(%s))", args[0])
+	case "copy":
+		if len(args) == 0 {
+			return `cGuiClipboardSet("")`
+		}
+		return fmt.Sprintf("cGuiClipboardSet(toString(%s))", args[0])
+	case "add":
+		if len(args) == 0 {
+			return "nil"
+		}
+		return fmt.Sprintf("cGuiAdd(%s)", args[0])
+	case "add_hist":
+		if len(args) == 0 {
+			return "nil"
+		}
+		return fmt.Sprintf("cGuiAddScrolled(%s)", args[0])
+	case "input_row":
+		if len(args) < 2 {
+			return "nil"
+		}
+		return fmt.Sprintf("cGuiInputRow(%s, %s)", args[0], args[1])
+	case "run":
+		return "cGuiRun()"
+	}
+	return "nil"
+}
+
+// genTuiCall compiles tui.* namespace calls (bubbletea, Elm-style).
+func (g *Generator) genTuiCall(method string, args []string, named map[string]parser.Expression) string {
+	getArg := func(i int, def string) string {
+		if i < len(args) {
+			return args[i]
+		}
+		return def
+	}
+	switch method {
+	case "run":
+		return fmt.Sprintf("cTuiRun(%s, %s, %s)", getArg(0, "nil"), getArg(1, "nil"), getArg(2, "nil"))
+	}
+	return "nil"
+}
+
+// genWebviewCall compiles webview.* namespace calls (webview_go shell).
+func (g *Generator) genWebviewCall(method string, args []string, named map[string]parser.Expression) string {
+	getArg := func(i int, def string) string {
+		if i < len(args) {
+			return args[i]
+		}
+		return def
+	}
+	switch method {
+	case "open":
+		return fmt.Sprintf("cWebviewOpen(toString(%s), toString(%s), int(toFloat(%s)), int(toFloat(%s)))",
+			getArg(0, `""`), getArg(1, `"Codong"`), getArg(2, "800"), getArg(3, "600"))
+	case "html":
+		return fmt.Sprintf("cWebviewHtml(toString(%s), toString(%s), int(toFloat(%s)), int(toFloat(%s)))",
+			getArg(0, `""`), getArg(1, `"Codong"`), getArg(2, "800"), getArg(3, "600"))
+	}
+	return "nil"
+}
+
+// genDrawCall handles module-level draw calls. Only the canvas constructor
+// lives at module level; every other draw method is an object method routed
+// through the generic cCall path (named args become a trailing CodongMap).
+func (g *Generator) genDrawCall(method string, args []string, named map[string]parser.Expression) string {
+	switch method {
+	case "canvas":
+		wExpr, hExpr := "800", "600"
+		if len(args) >= 2 {
+			wExpr, hExpr = args[0], args[1]
+		} else if len(args) == 1 {
+			wExpr, hExpr = args[0], args[0]
+		}
+		if named != nil {
+			if w, ok := named["w"]; ok {
+				wExpr = fmt.Sprintf("int(toFloat(%s))", g.genExpr(w))
+			} else if w, ok := named["width"]; ok {
+				wExpr = fmt.Sprintf("int(toFloat(%s))", g.genExpr(w))
+			}
+			if h, ok := named["h"]; ok {
+				hExpr = fmt.Sprintf("int(toFloat(%s))", g.genExpr(h))
+			} else if h, ok := named["height"]; ok {
+				hExpr = fmt.Sprintf("int(toFloat(%s))", g.genExpr(h))
+			}
+		} else {
+			wExpr = fmt.Sprintf("int(toFloat(%s))", wExpr)
+			hExpr = fmt.Sprintf("int(toFloat(%s))", hExpr)
+		}
+		return fmt.Sprintf("cDrawCanvasNew(%s, %s)", wExpr, hExpr)
 	}
 	return "nil"
 }
@@ -1926,9 +2103,13 @@ var allRuntimeModules = []runtimeModule{
 	{"Json", JsonImports, wrapKeepAlive(JsonKeepAlive)},
 	{"Env", EnvImports, wrapKeepAlive(EnvKeepAlive)},
 	{"Time", TimeImports, wrapKeepAlive(TimeKeepAlive)},
-	{"DB", DBImportsCore, wrapKeepAlive(DBKeepAlive)},          // conditional; driver imports emitted dynamically
-	{"Redis", RedisImports, wrapKeepAlive(RedisKeepAlive)},  // conditional
-	{"OAuth", OAuthImports, wrapKeepAlive(OAuthKeepAlive)},  // conditional
+	{"DB", DBImportsCore, wrapKeepAlive(DBKeepAlive)},            // conditional; driver imports emitted dynamically
+	{"Redis", RedisImports, wrapKeepAlive(RedisKeepAlive)},       // conditional
+	{"OAuth", OAuthImports, wrapKeepAlive(OAuthKeepAlive)},       // conditional
+	{"Draw", DrawImports, wrapKeepAlive(DrawKeepAlive)},          // conditional
+	{"Gui", GuiImports, wrapKeepAlive(GuiKeepAlive)},             // conditional; requires CGO
+	{"Webview", WebviewImports, wrapKeepAlive(WebviewKeepAlive)}, // conditional; requires CGO
+	{"Tui", TuiImports, wrapKeepAlive(TuiKeepAlive)},             // conditional; pure Go
 }
 
 // wrapKeepAlive converts a raw KeepAlive body (one symbol per line, with
@@ -1970,6 +2151,10 @@ var astModuleToRuntime = map[string]string{
 	"image":    "Image",
 	"oauth":    "OAuth",
 	"encoding": "Core", // cEncodingBase64* live in the always-on core
+	"draw":     "Draw",
+	"gui":      "Gui",
+	"webview":  "Webview",
+	"tui":      "Tui",
 }
 
 // astModuleNames is the set of built-in module names we recognise in the AST.
@@ -1979,6 +2164,10 @@ var astModuleNames = map[string]bool{
 	"web": true, "db": true, "http": true, "error": true, "llm": true,
 	"fs": true, "json": true, "env": true, "args": true, "time": true,
 	"redis": true, "image": true, "oauth": true, "encoding": true,
+	"draw":    true,
+	"gui":     true,
+	"webview": true,
+	"tui":     true,
 }
 
 // runtimeFragment returns the Go source text of a runtime module by its
@@ -2013,6 +2202,20 @@ func runtimeFragment(name string) string {
 		return RuntimeImage
 	case "OAuth":
 		return RuntimeOAuth
+	case "Draw":
+		return RuntimeDraw
+	case "Gui":
+		return RuntimeGui
+	case "Webview":
+		frag := RuntimeWebview
+		if runtime.GOOS == "linux" {
+			frag += RuntimeWebviewDialogsLinux
+		} else {
+			frag += RuntimeWebviewDialogsFallback
+		}
+		return frag
+	case "Tui":
+		return RuntimeTui
 	}
 	return ""
 }
@@ -2111,11 +2314,23 @@ func (g *Generator) emitRuntime() {
 			kaParts = append(kaParts, m.KeepAlive)
 		}
 	}
+	// Webview on Linux needs a cgo preamble for native file dialogs
+	// (gtk+-3.0 is already linked via webkit2gtk-4.0). The preamble comment
+	// must sit directly above the "C" import, so it is written as one unit.
+	if g.shouldIncludeModule("Webview") && runtime.GOOS == "linux" {
+		g.output.WriteString(WebviewCgoPreamble)
+		if !imports["unsafe"] {
+			imports["unsafe"] = true
+			g.output.WriteString("\t\"unsafe\"\n")
+		}
+	}
 	g.output.WriteString(")\n\n")
 
 	// Concatenate runtime fragments in stable order.
 	includeWeb := g.shouldIncludeModule("Web")
 	includeImage := g.shouldIncludeModule("Image")
+	includeDraw := g.shouldIncludeModule("Draw")
+	includeGui := g.shouldIncludeModule("Gui")
 	for _, m := range allRuntimeModules {
 		if !g.shouldIncludeModule(m.Name) {
 			continue
@@ -2123,14 +2338,20 @@ func (g *Generator) emitRuntime() {
 		frag := runtimeFragment(m.Name)
 		// Strip cross-module stubs from core when the corresponding real
 		// fragment is being emitted, so the real declarations don't
-		// conflict with the stubs. Web-stubs and image-stubs are
-		// stripped independently.
+		// conflict with the stubs. Web-stubs, image-stubs, draw-stubs and
+		// gui-stubs are stripped independently.
 		if m.Name == "Core" {
 			if includeWeb {
 				frag = stripStubBlock(frag, "WEB")
 			}
 			if includeImage {
 				frag = stripStubBlock(frag, "IMAGE")
+			}
+			if includeDraw {
+				frag = stripStubBlock(frag, "DRAW")
+			}
+			if includeGui {
+				frag = stripStubBlock(frag, "GUI")
 			}
 		}
 		g.output.WriteString(frag)

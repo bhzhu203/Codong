@@ -1,0 +1,38 @@
+// gui 版剪贴板管理器：输入区 Shift+Enter 或点击按钮 → 复制到系统剪贴板并清空，
+// 历史区点击任意条目可再次复制。
+// 注意：Enter 在多行输入框中插入换行，Shift+Enter 才是提交（Fyne 惯例）。
+
+gui.init("剪贴板管理器 - gui", 560, 440)
+
+history = []
+
+status = gui.label("已复制 0 条")
+
+input = gui.entry_multi("在此输入文字…（Shift+Enter 复制并清空）")
+
+on_submit = fn() {
+    t = input.text()
+    if t != "" {
+        gui.copy(t)
+        history.push(t)
+        status.set_text("已复制 " + history.len() + " 条")
+        input.set_text("")
+        d = t
+        if d.len() > 24 {
+            d = d.slice(0, 24) + "..."
+        }
+        btn = gui.button(d, fn() {
+            gui.copy(d)
+            status.set_text("已重新复制：" + d)
+        })
+        gui.add_hist(btn)
+    }
+}
+
+input.on_submit(on_submit)
+
+submit_btn = gui.button("复制并清空", on_submit)
+
+gui.input_row(input, submit_btn)
+gui.add(status)
+gui.run()

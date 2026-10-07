@@ -32,6 +32,16 @@ type cImageObj struct{ kind string }
 func cImageCall(o *cImageObj, method string, args ...Value) Value { return nil }
 // __GIRGEN_STRIP_IMAGE_STUBS_END__
 
+// __GIRGEN_STRIP_DRAW_STUBS_BEGIN__
+type cDrawCanvas struct{ kind string }
+func cDrawCall(o *cDrawCanvas, method string, args ...Value) Value { return nil }
+// __GIRGEN_STRIP_DRAW_STUBS_END__
+
+// __GIRGEN_STRIP_GUI_STUBS_BEGIN__
+type cGuiWidget struct{ kind string }
+func cGuiWidgetCall(o *cGuiWidget, method string, args ...Value) Value { return nil }
+// __GIRGEN_STRIP_GUI_STUBS_END__
+
 var cFsWorkDir string
 
 func cFsResolve(path string) string {
@@ -2009,6 +2019,18 @@ func cCall(obj Value, method string, args ...Value) Value {
 	case *cImageObj:
 
 		return cImageCall(o, method, args...)
+
+	case *cDrawCanvas:
+
+		return cDrawCall(o, method, args...)
+
+	case *cGuiWidget:
+
+		return cGuiWidgetCall(o, method, args...)
+
+	case []byte:
+
+		if method == "len" { return float64(len(o)) }
 
 	}
 

@@ -1,0 +1,20 @@
+// closure capture semantics test
+make = fn(n) {
+    t = "v-" + n
+    return fn() { return t }
+}
+a = make(1)
+b = make(2)
+print(a())
+print(b())
+
+counter = 0
+on_copy = fn() {
+    item = "item-" + counter
+    counter = counter + 1
+    return fn() { return item }
+}
+c1 = on_copy()
+c2 = on_copy()
+print(c1())
+print(c2())

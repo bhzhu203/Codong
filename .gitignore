@@ -2,6 +2,18 @@
 /codong
 *.exe
 
+# Compiled demo binaries
+/gui_clipboard
+/webview_clipboard
+/webview_clipboard (copy)
+test/gui_example/gui_demo
+test/gui_example/terminal_gui
+test/gui_example/timer_go/countdown_timer
+
+# Local tool config and scratch projects
+.qwen/
+/program/
+
 # OS
 .DS_Store
 Thumbs.db

@@ -1,0 +1,32 @@
+// Codong draw 模块端到端测试：画布 + 图形 + 保存 PNG/SVG
+
+c = draw.canvas(w: 720, h: 460)
+c.background("#f7f9fc")
+c.text("Codong draw module demo - weekly sales", x: 360, y: 20, color: "#1a2733")
+
+c.line(x1: 70, y1: 40, x2: 70, y2: 400, color: "#94a3b8", width: 2)
+c.line(x1: 70, y1: 400, x2: 680, y2: 400, color: "#94a3b8", width: 2)
+
+fn bar(cv, x, h, label) {
+    cv.rect(x: x, y: 400 - h, w: 60, h: h, fill: "#2080ff")
+    cv.text(label, x: x + 30, y: 418, color: "#475569")
+}
+
+bar(c, 90, 113, "Mon")
+bar(c, 172, 188, "Tue")
+bar(c, 254, 151, "Wed")
+bar(c, 336, 264, "Thu")
+bar(c, 418, 226, "Fri")
+bar(c, 500, 301, "Sat")
+bar(c, 582, 282, "Sun")
+
+c.circle(x: 300, y: 150, r: 24, fill: "#ff7a1a", stroke: "#ffffff", line_width: 3)
+c.circle(x: 460, y: 120, r: 24, fill: "#ff7a1a", stroke: "#ffffff", line_width: 3)
+
+r1 = c.save("draw_demo.png")
+svg = c.svg()
+bytes_len = c.png().len()
+
+print("save result: " + r1)
+print("svg length: " + svg.len())
+print("png bytes: " + bytes_len)

@@ -1,0 +1,23 @@
+// Codong TUI 计数器（Bubbletea，纯静态）
+// ↑/↓ 加减 · q 退出
+
+update = fn(m, msg) {
+    if msg.key == "q" {
+        return {model: m, quit: true}
+    }
+    if msg.key == "up" {
+        return m + 1
+    }
+    if msg.key == "down" {
+        return m - 1
+    }
+    return m
+}
+
+view = fn(m) {
+    return "计数: " + m + "\n\n  ↑/↓ 加减 · q 退出\n"
+}
+
+final = tui.run(update, view, 0)
+
+print("final count: " + final)

@@ -1,0 +1,563 @@
+// Markdown 浏览器（webview 版）：左边编辑、右边渲染，支持粘贴 / 编辑 / 渲染 / 显示
+// 标签页：可同时打开多个文件；当前标签页有内容时，打开文件会新建标签页载入；关闭最后一个标签页则清空。
+// 菜单栏：文件 → 新建标签页 / 打开…(.md) / 保存 / 另存为… / 关闭标签页 / 退出（退出整个编辑器）；快捷键 Ctrl+T/O/S/Shift+S/W。
+// 中间分隔条可左右拖动调整编辑区/预览区比例（双击复位 50:50）。
+//   Linux 走原生 GTK 对话框（webview 桥 __cOpenFile/__cSaveFile/__cExit），
+//   其他平台自动回退 <input type="file"> / 浏览器下载。
+// 用法：
+//   codong run test/markdown_browser.cod                  # 打开内置示例文档
+//   codong run test/markdown_browser.cod -- notes.md      # 打开指定 .md 文件（关联打开）
+// 文件关联：用 test/mdview.sh + test/mdview.desktop，然后执行
+//   xdg-mime default mdview.desktop text/markdown
+// 注意：三引号字符串内所有 { } 必须写成 \{ \}（否则按插值解析）。
+
+path = ""
+all_args = args.all()
+if all_args.len() > 0 {
+    path = all_args[0]
+}
+
+content = """# 欢迎使用 Markdown 浏览器
+
+左边 **编辑**，右边 **渲染**，实时预览。
+
+## 功能
+
+- 粘贴：点顶栏「粘贴」按钮，或在编辑区直接 Ctrl+V
+- 编辑：Tab 缩进两格，Shift+Tab 反缩进
+- 渲染：标题 / 列表 / 引用 / 表格 / 代码块 / 链接 / 图片
+- 关联打开：`codong run test/markdown_browser.cod -- file.md`
+
+> 试试在左侧修改文字，右侧预览会实时更新。
+
+| 语法 | 示例 |
+| --- | --- |
+| 粗体 | **加粗** |
+| 行内代码 | `code` |
+
+```go
+func main() \{
+    fmt.Println("Hello, Codong!")
+\}
+```
+"""
+
+title = "Markdown 浏览器"
+file_name = "(未命名)"
+
+if path != "" && fs.exists(path) {
+    content = fs.read(path)
+    file_name = fs.basename(path)
+    title = file_name + " - Markdown 浏览器"
+} else if path != "" {
+    // 文件不存在：以该文件名新建空标签页（保存时写入该路径）
+    content = ""
+    file_name = fs.basename(path)
+    title = file_name + " - Markdown 浏览器"
+}
+
+content_json = json.stringify(content).replace("</script", "<\\/script")
+file_json = json.stringify(file_name)
+title_json = json.stringify(title)
+path_json = json.stringify(path)
+
+html = """<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body \{ font-family: sans-serif; margin: 0; height: 100vh; display: flex; flex-direction: column; background: #1e1e1e; color: #ddd; \}
+#menubar \{ display: flex; background: #2d2d30; border-bottom: 1px solid #333; flex: none; user-select: none; \}
+.menu-wrap \{ position: relative; \}
+.menu-item \{ display: inline-block; padding: 5px 14px; font-size: 13px; color: #ccc; cursor: pointer; \}
+.menu-item:hover, .menu-item.open \{ background: #3b82f6; color: white; \}
+#filemenu \{ display: none; position: absolute; top: 100%; left: 0; background: #2d2d30; border: 1px solid #444; min-width: 190px; z-index: 10; box-shadow: 0 6px 16px rgba(0,0,0,.5); \}
+#filemenu.show \{ display: block; \}
+.mi \{ padding: 6px 18px; font-size: 13px; color: #ddd; cursor: pointer; white-space: nowrap; \}
+.mi:hover \{ background: #3b82f6; color: white; \}
+.mi .key \{ float: right; margin-left: 28px; color: #9ca3af; font-size: 12px; \}
+.mi:hover .key \{ color: #dbeafe; \}
+.msep \{ border-top: 1px solid #444; margin: 4px 0; \}
+#top \{ display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #333; flex: none; \}
+#tabbar \{ display: flex; background: #252526; border-bottom: 1px solid #333; flex: none; overflow-x: auto; min-height: 34px; \}
+.tab \{ display: flex; align-items: center; gap: 7px; padding: 7px 8px 7px 14px; font-size: 13px; color: #9ca3af; cursor: pointer; border-right: 1px solid #333; white-space: nowrap; user-select: none; \}
+.tab:hover \{ color: #d1d5db; \}
+.tab.active \{ background: #1e1e1e; color: #f0f0f0; box-shadow: inset 0 2px 0 #3b82f6; \}
+.tab .x \{ padding: 0 4px; border-radius: 3px; font-size: 12px; line-height: 1; \}
+.tab .x:hover \{ background: #4b5563; color: white; \}
+button \{ background: #3b82f6; color: white; border: none; border-radius: 5px; padding: 5px 14px; font-size: 13px; cursor: pointer; flex: none; \}
+button:hover \{ background: #2563eb; \}
+#clear \{ background: #4b5563; \}
+#status \{ margin-left: auto; font-size: 12px; color: #9ca3af; white-space: nowrap; \}
+#main \{ flex: 1; display: flex; min-height: 0; \}
+#editor \{ width: 50%; flex: none; box-sizing: border-box; background: #252526; color: #e8e8e8; border: none; padding: 14px; font-family: monospace; font-size: 14px; line-height: 1.6; resize: none; outline: none; \}
+#splitter \{ flex: none; width: 6px; background: #333; cursor: col-resize; \}
+#splitter:hover, #splitter.active \{ background: #3b82f6; \}
+#preview \{ flex: 1; min-width: 0; box-sizing: border-box; overflow-y: auto; padding: 14px 22px; background: #1e1e1e; \}
+#preview h1, #preview h2 \{ border-bottom: 1px solid #333; padding-bottom: 6px; \}
+#preview h1 \{ font-size: 26px; color: #f0f0f0; \}
+#preview h2 \{ font-size: 21px; color: #e5e5e5; \}
+#preview h3 \{ font-size: 17px; \}
+#preview a \{ color: #7dd3fc; \}
+#preview code \{ background: #2d2d30; border-radius: 4px; padding: 1px 5px; font-family: monospace; font-size: 13px; color: #ce9178; \}
+#preview pre \{ background: #2d2d30; border-radius: 6px; padding: 12px; overflow-x: auto; \}
+#preview pre code \{ background: none; padding: 0; color: #d4d4d4; \}
+#preview blockquote \{ margin: 8px 0; padding: 4px 14px; border-left: 3px solid #3b82f6; color: #9ca3af; background: #252526; \}
+#preview table \{ border-collapse: collapse; margin: 10px 0; \}
+#preview th, #preview td \{ border: 1px solid #444; padding: 6px 12px; font-size: 14px; \}
+#preview th \{ background: #2d2d30; \}
+#preview img \{ max-width: 100%; \}
+#preview hr \{ border: none; border-top: 1px solid #444; margin: 14px 0; \}
+</style>
+</head>
+<body>
+<div id="menubar">
+<span class="menu-wrap">
+<span class="menu-item" id="filemenu-btn">文件</span>
+<div id="filemenu">
+<div class="mi" data-act="newtab">新建标签页<span class="key">Ctrl+T</span></div>
+<div class="mi" data-act="open">打开…<span class="key">Ctrl+O</span></div>
+<div class="msep"></div>
+<div class="mi" data-act="save">保存<span class="key">Ctrl+S</span></div>
+<div class="mi" data-act="saveas">另存为…<span class="key">Ctrl+Shift+S</span></div>
+<div class="msep"></div>
+<div class="mi" data-act="close">关闭标签页<span class="key">Ctrl+W</span></div>
+<div class="mi" data-act="exit">退出（整个编辑器）</div>
+</div>
+</span>
+</div>
+<input type="file" id="fileinput" accept=".md,.markdown,text/markdown" style="display:none">
+<div id="tabbar"></div>
+<div id="top">
+<button id="paste">粘贴</button>
+<button id="clear">清空</button>
+<span id="status"></span>
+</div>
+<div id="main">
+<textarea id="editor" spellcheck="false" placeholder="在左侧输入或粘贴 Markdown，右侧实时预览…"></textarea>
+<div id="splitter" title="拖动调整左右比例（双击复位）"></div>
+<div id="preview"></div>
+</div>
+<script>
+var initialContent = {content_json};
+var initialName = {file_json};
+var winTitle = {title_json};
+var initialPath = {path_json};
+document.title = winTitle;
+function $(id) \{ return document.getElementById(id); \}
+
+function esc(s) \{
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+\}
+
+// 行内格式：先保护行内代码，再处理图片/链接/粗体/斜体/删除线
+function inline(s) \{
+    var codes = [];
+    s = s.replace(/`([^`]+)`/g, function(m, c) \{
+        codes.push(c);
+        return '\\u0000' + (codes.length - 1) + '\\u0000';
+    \});
+    s = s.replace(/!\[([^\]]*)\]\(([^)\\s]+)\)/g, '<img src="$2" alt="$1">');
+    s = s.replace(/\[([^\]]+)\]\(([^)\\s]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+    s = s.replace(/\\*\\*([^*]+)\\*\\*/g, '<b>$1</b>');
+    s = s.replace(/__([^_]+)__/g, '<b>$1</b>');
+    s = s.replace(/~~([^~]+)~~/g, '<s>$1</s>');
+    s = s.replace(/\\*([^*\\n]+)\\*/g, '<i>$1</i>');
+    s = s.replace(/_([^_\\n]+)_/g, '<i>$1</i>');
+    s = s.replace(/\\u0000(\\d+)\\u0000/g, function(m, i) \{
+        return '<code>' + esc(codes[+i]) + '</code>';
+    \});
+    return s;
+\}
+
+// 块级解析：代码块 / 标题 / 分隔线 / 引用 / 表格 / 列表 / 段落
+function md(text) \{
+    var lines = text.replace(/\\r\\n?/g, '\\n').split('\\n');
+    var out = [];
+    var para = [];
+    function flush() \{
+        if (para.length > 0) \{
+            out.push('<p>' + para.map(inline).join('<br>') + '</p>');
+            para = [];
+        \}
+    \}
+    var i = 0;
+    while (i < lines.length) \{
+        var line = lines[i];
+        if (/^```/.test(line)) \{
+            flush();
+            var buf = [];
+            i++;
+            while (i < lines.length && !/^```/.test(lines[i])) \{ buf.push(lines[i]); i++; \}
+            i++;
+            out.push('<pre><code>' + esc(buf.join('\\n')) + '</code></pre>');
+            continue;
+        \}
+        var h = line.match(/^(#\{1,6\})\\s+(.*)$/);
+        if (h) \{
+            flush();
+            var lv = h[1].length;
+            out.push('<h' + lv + '>' + inline(esc(h[2])) + '</h' + lv + '>');
+            i++;
+            continue;
+        \}
+        if (/^\\s*(-\{3,\}|\\*\{3,\})\\s*$/.test(line)) \{ flush(); out.push('<hr>'); i++; continue; \}
+        if (/^>\\s?/.test(line)) \{
+            flush();
+            var q = [];
+            while (i < lines.length && /^>\\s?/.test(lines[i])) \{ q.push(lines[i].replace(/^>\\s?/, '')); i++; \}
+            out.push('<blockquote>' + md(q.join('\\n')) + '</blockquote>');
+            continue;
+        \}
+        if (line.indexOf('|') >= 0 && i + 1 < lines.length && lines[i+1].indexOf('|') >= 0 && /^[\\s|:\\-]+$/.test(lines[i+1])) \{
+            flush();
+            function cells(row) \{
+                return row.replace(/^\\s*\|/, '').replace(/\|\\s*$/, '').split('|').map(function(c) \{ return c.trim(); \});
+            \}
+            var head = cells(line);
+            i += 2;
+            var rows = [];
+            while (i < lines.length && lines[i].indexOf('|') >= 0 && lines[i].trim() != '') \{ rows.push(cells(lines[i])); i++; \}
+            var t = '<table><tr>';
+            head.forEach(function(c) \{ t += '<th>' + inline(esc(c)) + '</th>'; \});
+            t += '</tr>';
+            rows.forEach(function(r) \{
+                t += '<tr>';
+                r.forEach(function(c) \{ t += '<td>' + inline(esc(c)) + '</td>'; \});
+                t += '</tr>';
+            \});
+            out.push(t + '</table>');
+            continue;
+        \}
+        if (/^\\s*[-*+]\\s+/.test(line)) \{
+            flush();
+            var items = [];
+            while (i < lines.length && /^\\s*[-*+]\\s+/.test(lines[i])) \{ items.push(lines[i].replace(/^\\s*[-*+]\\s+/, '')); i++; \}
+            out.push('<ul>' + items.map(function(x) \{ return '<li>' + inline(esc(x)) + '</li>'; \}).join('') + '</ul>');
+            continue;
+        \}
+        if (/^\\s*\\d+\\.\\s+/.test(line)) \{
+            flush();
+            var oitems = [];
+            while (i < lines.length && /^\\s*\\d+\\.\\s+/.test(lines[i])) \{ oitems.push(lines[i].replace(/^\\s*\\d+\\.\\s+/, '')); i++; \}
+            out.push('<ol>' + oitems.map(function(x) \{ return '<li>' + inline(esc(x)) + '</li>'; \}).join('') + '</ol>');
+            continue;
+        \}
+        if (line.trim() == '') \{ flush(); i++; continue; \}
+        para.push(esc(line));
+        i++;
+    \}
+    flush();
+    return out.join('\\n');
+\}
+
+var ed = $('editor');
+
+function render() \{
+    $('preview').innerHTML = md(ed.value);
+    var t = ed.value;
+    var cur = tabs[curIdx];
+    $('status').textContent = cur.name + ' · ' + t.length + ' 字符 · ' + t.split('\\n').length + ' 行';
+\}
+
+// ---------- 标签页管理 ----------
+var tabs = [];      // \{name, path, content\}
+var curIdx = -1;
+var untitledN = 0;
+
+function baseName(p) \{ return p.split(/[\\/]/).pop(); \}
+function setStatus(msg) \{ $('status').textContent = msg; \}
+
+function newTabName() \{ untitledN++; return '(未命名 ' + untitledN + ')'; \}
+
+function renderTabs() \{
+    var bar = $('tabbar');
+    bar.innerHTML = '';
+    tabs.forEach(function(t, i) \{
+        var el = document.createElement('div');
+        el.className = 'tab' + (i == curIdx ? ' active' : '');
+        var label = document.createElement('span');
+        label.textContent = t.name;
+        var x = document.createElement('span');
+        x.className = 'x';
+        x.textContent = '✕';
+        x.title = '关闭标签页 (Ctrl+W)';
+        x.onclick = function(ev) \{ ev.stopPropagation(); closeTab(i); \};
+        el.appendChild(label);
+        el.appendChild(x);
+        el.onclick = function() \{ switchTab(i); \};
+        bar.appendChild(el);
+    \});
+\}
+
+function switchTab(i) \{
+    if (i == curIdx || i < 0 || i >= tabs.length) \{ return; \}
+    tabs[curIdx].content = ed.value;
+    curIdx = i;
+    var t = tabs[i];
+    ed.value = t.content;
+    document.title = t.name + ' - Markdown 浏览器';
+    renderTabs();
+    render();
+    ed.focus();
+\}
+
+function newTab(name, path, content) \{
+    if (curIdx >= 0) \{ tabs[curIdx].content = ed.value; \}
+    tabs.push(\{name: name, path: path || '', content: content == null ? '' : content\});
+    curIdx = tabs.length - 1;
+    ed.value = tabs[curIdx].content;
+    document.title = name + ' - Markdown 浏览器';
+    renderTabs();
+    render();
+    ed.focus();
+\}
+
+function doNewTab() \{
+    closeMenu();
+    newTab(newTabName(), '', '');
+\}
+
+function closeTab(i) \{
+    if (i < 0 || i >= tabs.length) \{ return; \}
+    tabs.splice(i, 1);
+    if (tabs.length == 0) \{
+        // 关闭最后一个标签页：清空编辑区，保留空状态
+        curIdx = -1;
+        ed.value = '';
+        document.title = 'Markdown 浏览器';
+        renderTabs();
+        render();
+        return;
+    \}
+    if (curIdx >= tabs.length) \{ curIdx = tabs.length - 1; \}
+    else if (i < curIdx) \{ curIdx--; \}
+    var t = tabs[curIdx];
+    ed.value = t.content;
+    document.title = t.name + ' - Markdown 浏览器';
+    renderTabs();
+    render();
+    ed.focus();
+\}
+
+// 打开文件：当前标签页有内容时新建标签页载入；空标签页（未命名且无路径）直接复用
+function openFile(p, text) \{
+    var name = baseName(p);
+    if (curIdx >= 0 && tabs[curIdx].content == '' && !tabs[curIdx].path) \{
+        // 复用当前空标签页
+        tabs[curIdx] = \{name: name, path: p, content: text\};
+        ed.value = text;
+        document.title = name + ' - Markdown 浏览器';
+        renderTabs();
+        render();
+    \} else \{
+        newTab(name, p, text);
+    \}
+    setStatus('已打开 ' + p);
+    ed.focus();
+\}
+
+// 初始标签页：有内容或路径则载入，否则空状态
+if (initialContent != '' || initialPath != '') \{
+    tabs.push(\{name: initialName, path: initialPath, content: initialContent\});
+    curIdx = 0;
+    ed.value = initialContent;
+    renderTabs();
+\}
+render();
+
+var timer = null;
+ed.addEventListener('input', function() \{
+    if (timer) \{ clearTimeout(timer); \}
+    timer = setTimeout(render, 120);
+\});
+
+// Tab 缩进两格 / Shift+Tab 反缩进
+ed.addEventListener('keydown', function(e) \{
+    if (e.key != 'Tab') \{ return; \}
+    e.preventDefault();
+    var s = ed.selectionStart;
+    var en = ed.selectionEnd;
+    if (e.shiftKey) \{
+        var v = ed.value;
+        var ls = v.lastIndexOf('\\n', s - 1) + 1;
+        var m2 = v.slice(ls, ls + 2).match(/^ \{1,2\}/);
+        if (m2) \{ ed.setRangeText('', ls, ls + m2[0].length, 'end'); \}
+    \} else \{
+        ed.setRangeText('  ', s, en, 'end');
+    \}
+\});
+
+function insertAtCursor(t) \{
+    if (!t) \{ return; \}
+    var s = ed.selectionStart;
+    var en = ed.selectionEnd;
+    ed.setRangeText(t, s, en, 'end');
+    render();
+\}
+
+// 粘贴按钮：优先走原生桥 __cClipboardRead（webview），其次 Web API，失败则提示用 Ctrl+V
+$('paste').onclick = function() \{
+    if (window.__cClipboardRead) \{
+        __cClipboardRead().then(function(t) \{
+            if (t) \{ insertAtCursor(t); \} else \{ hintPaste(); \}
+        \}).catch(function() \{ hintPaste(); \});
+    \} else if (navigator.clipboard && navigator.clipboard.readText) \{
+        navigator.clipboard.readText().then(insertAtCursor).catch(function() \{ hintPaste(); \});
+    \} else \{ hintPaste(); \}
+\};
+
+function hintPaste() \{
+    ed.focus();
+    $('status').textContent = '无法直接读取剪贴板，请在编辑区按 Ctrl+V';
+\}
+
+$('clear').onclick = function() \{
+    ed.value = '';
+    render();
+    ed.focus();
+\};
+
+// ---------- 分隔条：拖动调整编辑区/预览区比例，双击复位 50:50 ----------
+var splitter = $('splitter');
+var mainEl = $('main');
+function setSplit(x) \{
+    var r = mainEl.getBoundingClientRect();
+    var pct = (x - r.left) / r.width * 100;
+    pct = Math.max(15, Math.min(85, pct)); // 两侧各留至少 15%
+    ed.style.width = pct + '%';
+\}
+splitter.addEventListener('mousedown', function(e) \{
+    e.preventDefault();
+    splitter.classList.add('active');
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    function onMove(ev) \{ setSplit(ev.clientX); \}
+    function onUp() \{
+        splitter.classList.remove('active');
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+    \}
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+\});
+splitter.addEventListener('dblclick', function() \{ ed.style.width = '50%'; \});
+
+// ---------- 菜单栏：文件 → 新建 / 打开 / 保存 / 另存为 / 关闭 / 退出 ----------
+var fileBtn = $('filemenu-btn');
+var fileMenu = $('filemenu');
+function closeMenu() \{ fileMenu.classList.remove('show'); fileBtn.classList.remove('open'); \}
+fileBtn.onclick = function(e) \{
+    e.stopPropagation();
+    if (fileMenu.classList.contains('show')) \{ closeMenu(); \}
+    else \{ fileMenu.classList.add('show'); fileBtn.classList.add('open'); \}
+\};
+document.addEventListener('click', closeMenu);
+
+function doOpen() \{
+    closeMenu();
+    if (window.__cOpenFile) \{
+        __cOpenFile('打开 Markdown 文件').then(function(p) \{
+            if (!p) \{ return; \} // 用户取消
+            if (window.__cReadFile) \{
+                __cReadFile(p).then(function(t) \{ openFile(p, t); \});
+            \} else \{ openFile(p, ''); \}
+        \});
+    \} else \{
+        $('fileinput').click(); // 非 Linux：回退 <input type="file">
+    \}
+\}
+
+function saveTo(p) \{
+    if (window.__cSaveFile) \{
+        __cSaveFile(p, ed.value, '').then(function(r) \{
+            if (r == 'ok') \{ setStatus('已保存 ' + p); \}
+            else if (r && r.indexOf('error:') == 0) \{ setStatus('保存失败：' + r.slice(6)); \}
+        \});
+    \} else \{ download(p, ed.value); \}
+\}
+
+function doSave() \{
+    closeMenu();
+    if (curIdx < 0) \{ return; \}
+    var t = tabs[curIdx];
+    if (t.path) \{ saveTo(t.path); \} else \{ doSaveAs(); \}
+\}
+
+function doSaveAs() \{
+    closeMenu();
+    if (curIdx < 0) \{ return; \}
+    var t = tabs[curIdx];
+    var suggested = (t.name && t.name.indexOf('(未命名') != 0) ? t.name : 'untitled.md';
+    if (window.__cSaveFile) \{
+        __cSaveFile('', ed.value, suggested).then(function(r) \{
+            if (!r) \{ return; \} // 用户取消
+            if (r.indexOf('error:') == 0) \{ setStatus('保存失败：' + r.slice(6)); return; \}
+            t.path = r;
+            t.name = baseName(r);
+            document.title = t.name + ' - Markdown 浏览器';
+            renderTabs();
+            render();
+            setStatus('已保存 ' + r);
+        \});
+    \} else \{ download(suggested, ed.value); \}
+\}
+
+function doCloseTab() \{
+    closeMenu();
+    if (curIdx >= 0) \{ closeTab(curIdx); \}
+\}
+
+function doExit() \{
+    closeMenu();
+    if (window.__cExit) \{ __cExit(); \} else \{ window.close(); \}
+\}
+
+fileMenu.querySelectorAll('.mi').forEach(function(el) \{
+    el.onclick = function(e) \{
+        e.stopPropagation();
+        var a = el.getAttribute('data-act');
+        if (a == 'newtab') \{ doNewTab(); \}
+        else if (a == 'open') \{ doOpen(); \}
+        else if (a == 'save') \{ doSave(); \}
+        else if (a == 'saveas') \{ doSaveAs(); \}
+        else if (a == 'close') \{ doCloseTab(); \}
+        else if (a == 'exit') \{ doExit(); \}
+    \};
+\});
+
+// 非 Linux 回退：文件选择框 / 浏览器下载
+$('fileinput').onchange = function() \{
+    var f = this.files[0];
+    if (!f) \{ return; \}
+    var rd = new FileReader();
+    rd.onload = function() \{ openFile(f.name, String(rd.result)); \};
+    rd.readAsText(f);
+    this.value = '';
+\};
+
+function download(name, text) \{
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], \{type: 'text/markdown'\}));
+    a.download = name;
+    a.click();
+    setStatus('已下载 ' + name);
+\}
+
+// 快捷键：Ctrl+T 新建 / Ctrl+O 打开 / Ctrl+S 保存 / Ctrl+Shift+S 另存为 / Ctrl+W 关闭标签页（Mac 上 Cmd 同样有效）
+document.addEventListener('keydown', function(e) \{
+    if (!(e.ctrlKey || e.metaKey)) \{ return; \}
+    var k = e.key.toLowerCase();
+    if (k == 't') \{ e.preventDefault(); doNewTab(); \}
+    else if (k == 'o') \{ e.preventDefault(); doOpen(); \}
+    else if (k == 's') \{ e.preventDefault(); if (e.shiftKey) \{ doSaveAs(); \} else \{ doSave(); \} \}
+    else if (k == 'w') \{ e.preventDefault(); doCloseTab(); \}
+\});
+</script>
+</body>
+</html>
+"""
+
+webview.html(html, title, 1080, 680)

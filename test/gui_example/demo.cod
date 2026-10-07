@@ -1,0 +1,17 @@
+// Codong GUI 示例程序 - 完整演示
+
+// 初始化窗口 (标题，宽度，高度)
+gui.init("你好 Codong!", 400, 300)
+
+// 显示欢迎标签
+gui.show_label("欢迎使用 Codong 图形界面!")
+
+print("GUI 初始化完成")
+
+// 显示带按钮的界面
+gui.show_button("这是一个测试", "点击我")
+
+print("GUI 已创建，窗口运行中...")
+
+// 运行 GUI 主循环（阻塞）
+gui.run()

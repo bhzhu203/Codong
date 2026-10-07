@@ -1,0 +1,10 @@
+[project]
+name = "gui_example"
+version = "0.1.0"
+
+[bridge]
+gui_init = { fn = "bridge.GUIInit", permissions = [] }
+gui_show_label = { fn = "bridge.GUIShowLabel", permissions = [] }
+gui_show_button = { fn = "bridge.GUIShowButton", permissions = [] }
+gui_run = { fn = "bridge.GUIRun", permissions = [] }
+gui_close = { fn = "bridge.GUIClose", permissions = [] }
