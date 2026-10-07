@@ -299,8 +299,15 @@ func (p *Parser) parseConstStatement() *ConstStatement {
 
 func (p *Parser) parseReturnStatement() *ReturnStatement {
 	stmt := &ReturnStatement{Token: p.curToken}
+	// A bare return stays on the return token, like break and continue, so
+	// the enclosing block loop steps over the token after it exactly once;
+	// advancing past the closing brace here would make the block swallow
+	// whatever follows it. With a value, parse from the next token.
+	if p.peekToken.Type == lexer.NEWLINE || p.peekToken.Type == lexer.RBRACE {
+		return stmt
+	}
 	p.nextToken()
-	if p.curToken.Type != lexer.NEWLINE && p.curToken.Type != lexer.RBRACE && p.curToken.Type != lexer.EOF {
+	if p.curToken.Type != lexer.EOF {
 		stmt.Value = p.parseExpression(LOWEST)
 	}
 	return stmt
