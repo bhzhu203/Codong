@@ -76,7 +76,7 @@ structured JSON with a `fix` field that tells the AI exactly what to do.
 ### Problem 3: Package Selection Wastes Context
 
 Before writing business logic, an AI must choose an HTTP library, a database driver, a JSON
-parser, resolve version conflicts, and configure them. Codong ships eight built-in modules that
+parser, resolve version conflicts, and configure them. Codong ships ten built-in modules that
 cover 90% of AI workloads. No package manager required.
 
 ### The Result: 70%+ Token Savings
@@ -387,14 +387,14 @@ compilation. This is the same model as TypeScript -> JavaScript or Kotlin -> JVM
 | AI-native syntax design | Memory management, garbage collection |
 | High-constraint domain APIs | Goroutine concurrency scheduling |
 | Structured JSON error system | Cross-platform compilation |
-| 8 built-in module abstractions | Battle-tested runtime (10+ years) |
+| 10 built-in module abstractions | Battle-tested runtime (10+ years) |
 | Go Bridge extension protocol | Hundreds of thousands of ecosystem libraries |
 
 ---
 
 ## Built-in Modules
 
-Eight modules ship with Codong. No installation, no version conflicts, no choices.
+Ten modules ship with Codong. No installation, no version conflicts, no choices.
 
 | Module | Purpose | Key Methods |
 |--------|---------|-------------|
@@ -407,6 +407,7 @@ Eight modules ship with Codong. No installation, no version conflicts, no choice
 | [`env`](#env-module) | Environment variables | get, require, has, all, load |
 | [`time`](#time-module) | Date, time, duration | now, sleep, format, parse, diff |
 | [`error`](#error-module) | Structured error creation and handling | new, wrap, handle, retry |
+| [`mygo`](#mygo-module) | Native desktop GUI: windows, menus, widgets | run, menu_button, split, input, column |
 
 ```mermaid
 graph TD
@@ -423,9 +424,10 @@ graph TD
         H["env"] --> A
         I["time"] --> A
         J["error"] --> A
+        K["mygo (desktop UI)"] --> A
     end
     subgraph "Extension"
-        K["Go Bridge"] --> A
+        L["Go Bridge"] --> A
     end
 ```
 
@@ -467,6 +469,28 @@ web.delete("/todos/{id}", fn(req) {
 
 server = web.serve(port: 3000)
 ```
+
+### Native Desktop App (mygo)
+
+```
+n = 0
+mygo.run(fn(c) {
+    mygo.row(c, fn() {
+        mygo.toolbar(c, fn() {
+            if mygo.menu_button(c, "File", ["Reset", "---", "Quit"]) == "Quit" {
+                mygo.quit()
+            }
+        })
+        mygo.spacer(c)
+    }, key: "menubar", gap: 0)
+    mygo.column(c, fn() {
+        mygo.text(c, "Count: {n}", size: 40, bold: true)
+        if mygo.button(c, "+", primary: true) { n = n + 1 }
+    }, grow: 1, center: true, gap: 16)
+}, title: "Counter", width: 360, height: 260)
+```
+
+Requires Go >= 1.27.1 at build time; see [SPEC_GUI_FOR_AI.md](SPEC_GUI_FOR_AI.md) §21 for the full widget set (menus, split panes, dialogs, hotkeys).
 
 ### LLM-Powered Endpoint
 
@@ -992,6 +1016,50 @@ graph TD
 
 ---
 
+### mygo Module
+
+Native desktop GUI — declarative and per-frame: `mygo.run(view)` opens the window and calls `view(c)` again after every input, so the interface rebuilds from current state. Requires Go >= 1.27.1 at build time (see [SPEC_GUI_FOR_AI.md](SPEC_GUI_FOR_AI.md) §21 for the full guide).
+
+| Method | Description |
+|--------|-------------|
+| `mygo.run(view, title:, width:, height:)` | Open the window and block on the event loop. |
+| `mygo.quit(c)` | Exit the application. |
+| `mygo.on_close(fn() { ... })` | Intercept the window's ✕ (ask about unsaved work, then `mygo.quit()`). |
+| `mygo.column / row / scroll(c, fn() { ... }, ...)` | Layout containers (vertical, horizontal, scrollable). |
+| `mygo.toolbar(c, fn() { ... })` | Menu-bar strip; put `menu_button`s inside. |
+| `mygo.menu_button(c, "文件", items)` | Native dropdown menu; returns the chosen label in that frame. Items: `"标签"`, `"标签\|Ctrl+S"`, `"---"` separator, `"!标签"` disabled. |
+| `mygo.split(c, left, right, pos: w)` | Two panes with a draggable divider; returns the first pane's width. |
+| `mygo.text(c, s, size:, bold:, color:, muted:, align:, selectable:)` | Static text. |
+| `mygo.button(c, label, primary:, disabled:)` | Button; `true` in the frame it was clicked. |
+| `mygo.input(c, text, placeholder:, autofocus:, on_submit:)` | Single-line text field; returns the current value. |
+| `mygo.text_area(c, text, fill:)` | Multi-line editor; returns the current value. |
+| `mygo.checkbox / switch / slider(c, v, ...)` | Toggle, switch, slider; return the current value. |
+| `mygo.progress(c, 0.5, width:)` | Progress bar (0..1). |
+| `mygo.image(c, "./logo.png", width:)` | Image from a file path. |
+| `mygo.spacer(c)` / `mygo.divider(c)` / `mygo.link(c, label, url)` | Flexible space, horizontal rule, hyperlink. |
+| `mygo.win_size(c)` | Window content size as `[width, height]`. |
+| `mygo.theme(c)` | Theme colors map: `{dark, text, muted, surface, background, accent}`. |
+| `mygo.key(c, "ctrl+s")` | True in the frame the key was pressed (also `enter`, `escape`, `up`, …). |
+
+```
+text = "# hello"
+mygo.run(fn(c) {
+    mygo.row(c, fn() {
+        mygo.toolbar(c, fn() {
+            if mygo.menu_button(c, "File", ["Save|Ctrl+S", "---", "Quit"]) == "Quit" {
+                mygo.quit()
+            }
+        })
+        mygo.spacer(c)
+    }, key: "menubar", gap: 0)
+    mygo.row(c, fn() {
+        text = mygo.text_area(c, text, fill: true)
+    }, key: "main", grow: 1, gap: 0)
+}, title: "Editor", width: 800, height: 600)
+```
+
+---
+
 ## Concurrency
 
 Codong uses Go-style concurrency with goroutines and channels.
@@ -1029,7 +1097,7 @@ select {
 
 ## Go Bridge
 
-When you need a capability outside the eight built-in modules, Go Bridge lets human architects
+When you need a capability outside the ten built-in modules, Go Bridge lets human architects
 wrap any Go package for AI consumption. AI only sees function names and return values.
 Permissions are declared explicitly.
 
