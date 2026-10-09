@@ -1,0 +1,908 @@
+// Markdown 浏览器（mygo 原生桌面版）：左边编辑、右边渲染，支持标签页 / 查找 /
+// 未保存保护 / 实时预览。是 test/markdown_browser-comlex.cod（webview 版）的
+// 原生重写，功能对照：
+//   编辑：text_area 原生编辑（Ctrl+C/V/X/A、Ctrl+Z 撤销 / Ctrl+Y 重做原生实现，
+//         无需自绘撤销栈）；顶栏为「文件 / 编辑 / 视图 / 帮助」下拉菜单
+//         （mygo.menu_button，原生 GTK 弹出菜单，不可用项置灰）。
+//   标签页：按钮行（● 表示未保存，当前页高亮，✕ 关闭，＋ 新建）；关闭最后一个
+//         标签页保留空状态，不退出。
+//   未保存保护：关闭标签页 / 退出 / 标题栏 ✕ 都先弹应用内「保存 / 不保存 / 取消」
+//         询问；退出时按标签顺序逐个询问，任一取消则中止（另存为框取消同样中止）。
+//   打开 / 另存为：应用内路径输入框（原版为系统文件对话框，mygo 无此 API）。
+//   查找：Ctrl+F 打开，Enter/↓ 下一个、↑ 上一个（回绕），显示 当前/总数 与
+//         匹配所在行号与行内容；不能移动编辑器光标 / 滚动到位（无 API）。
+//   预览：Codong 侧写 markdown 解析器，渲染成原生组件：标题加粗放大、引用缩进、
+//         代码块单色、表格 │ 分隔、块级本地图片用 mygo.image 显示；行内标记
+//         (**、`、*、~~、链接) 仅去掉标记不保样式；块级图片以外不解析图片。
+//   分隔：原生分隔条（Split）拖拽调整编辑 / 预览宽度，分隔线聚焦后 ←/→ 微调；
+//         「视图」菜单可平分成两半；两个窗格都有内边距，内容不会贴住分隔线。
+//   键盘：Ctrl+T/N 新建、Ctrl+O 打开、Ctrl+S 保存、Ctrl+Shift+S 另存为、
+//         Ctrl+F 查找、Ctrl+W 关闭、Ctrl+Tab / Ctrl+Shift+Tab 切换；焦点在
+//         编辑器内时仅未被子控件消费的快捷键会生效。
+// 运行：codong run test/mygo_markdown_browser.cod（需要 Go >= 1.27.1）
+
+tabs = []          // 标签页列表：{name, path, content, saved}
+cur = -1           // 当前标签页下标，-1 表示无标签页
+untitled_n = 0     // 未命名标签页计数器
+split_w = 350.0    // 编辑区宽度（DIP，原生分隔条当前值）
+split_req = 0.0    // 分隔条一次性设置值（「视图」菜单平分后置位，调用后清零）
+find_open = false  // 查找条是否展开
+find_query = ""    // 查找内容
+find_hit = 0       // 当前匹配序号（0 起）
+find_n = 0         // 匹配总数
+find_lineno = 0    // 当前匹配所在行号
+find_line = ""     // 当前匹配所在行内容（截断预览）
+exit_requested = false // 正在执行退出流程
+exit_skip = []     // 退出流程中已选择「不保存」的标签下标
+ask_kind = ""      // 询问框场景："close" / "exit" / ""
+ask_idx = -1       // 询问框针对的标签下标
+ask_err = ""       // 询问框内错误信息
+dialog = ""        // 路径对话框场景："open" / "saveas" / ""
+dialog_input = ""  // 路径输入框内容
+dialog_err = ""    // 路径对话框错误信息
+after_save_then = "" // 另存为完成后动作："close" / "exit" / ""
+after_save_idx = -1  // 另存为针对的标签下标
+status_msg = ""    // 状态栏附加消息
+cache_ok = false   // 预览解析缓存是否有效
+cache_src = ""     // 预览解析缓存对应的原文
+cache_blocks = []  // 预览解析缓存（块列表）
+last_title = ""    // 上次设置的窗口标题
+
+is_dirty = fn(t) {
+    return t["content"] != t["saved"]
+}
+
+first_dirty = fn(skip) {
+    i = 0
+    while i < tabs.len() {
+        if is_dirty(tabs[i]) && !skip.contains(i) {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+new_tab = fn() {
+    untitled_n = untitled_n + 1
+    nm = "(未命名 {untitled_n})"
+    tabs.push({"name": nm, "path": "", "content": "", "saved": ""})
+    cur = tabs.len() - 1
+    status_msg = ""
+}
+
+switch_tab = fn(i) {
+    if i < 0 || i >= tabs.len() { return }
+    cur = i
+    if tabs[i]["path"] != "" { status_msg = "已打开 " + tabs[i]["path"] } else { status_msg = "" }
+}
+
+really_close = fn(i) {
+    if i < 0 || i >= tabs.len() { return }
+    tabs = tabs.slice(0, i) + tabs.slice(i + 1)
+    if tabs.len() == 0 {
+        cur = -1
+        return
+    }
+    if cur >= tabs.len() {
+        cur = tabs.len() - 1
+    } else if i < cur {
+        cur = cur - 1
+    }
+}
+
+request_close = fn(i) {
+    if i < 0 || i >= tabs.len() { return }
+    if is_dirty(tabs[i]) {
+        ask_kind = "close"
+        ask_idx = i
+        ask_err = ""
+    } else {
+        really_close(i)
+    }
+}
+
+discard_ask = fn() {
+    j = ask_idx
+    k = ask_kind
+    ask_kind = ""
+    ask_idx = -1
+    ask_err = ""
+    if k == "close" { really_close(j) }
+    if k == "exit" { exit_skip.push(j) }
+}
+
+cancel_ask = fn() {
+    ask_kind = ""
+    ask_idx = -1
+    ask_err = ""
+    exit_requested = false
+    exit_skip = []
+}
+
+// 保存标签页：返回 "ok" 成功 / "saveas" 需要路径 / "error" 失败
+save_tab = fn(i) {
+    if i < 0 || i >= tabs.len() { return "error" }
+    t = tabs[i]
+    if t["path"] == "" { return "saveas" }
+    r = fs.write(t["path"], t["content"])
+    if type_of(r) == "error" { return "error" }
+    t["saved"] = t["content"]
+    return "ok"
+}
+
+save_current = fn() {
+    if cur < 0 { return }
+    r = save_tab(cur)
+    if r == "saveas" {
+        open_saveas(cur, "")
+    } else if r == "error" {
+        status_msg = "保存失败"
+    } else {
+        status_msg = "已保存 " + tabs[cur]["path"]
+    }
+}
+
+open_saveas = fn(i, then) {
+    if i < 0 || i >= tabs.len() { return }
+    ask_kind = ""
+    ask_idx = -1
+    ask_err = ""
+    dialog = "saveas"
+    dialog_err = ""
+    after_save_then = then
+    after_save_idx = i
+    nm = tabs[i]["name"]
+    if nm.starts_with("(未命名") { nm = "untitled.md" }
+    dialog_input = nm
+}
+
+open_dialog = fn() {
+    dialog = "open"
+    dialog_input = ""
+    dialog_err = ""
+}
+
+open_into = fn(p, r) {
+    nm = fs.basename(p)
+    t = {"name": nm, "path": p, "content": r, "saved": r}
+    if cur >= 0 && tabs[cur]["path"] == "" && tabs[cur]["content"] == "" {
+        tabs[cur] = t
+    } else {
+        tabs.push(t)
+        cur = tabs.len() - 1
+    }
+    status_msg = "已打开 " + p
+}
+
+dialog_ok = fn() {
+    p = dialog_input.trim()
+    if p == "" {
+        dialog_err = "请输入路径"
+        return
+    }
+    if dialog == "open" {
+        if !fs.exists(p) {
+            dialog_err = "文件不存在"
+            return
+        }
+        if !fs.is_file(p) {
+            dialog_err = "不是文件"
+            return
+        }
+        r = fs.read(p)
+        if type_of(r) != "string" {
+            dialog_err = "读取失败"
+            return
+        }
+        dialog = ""
+        dialog_err = ""
+        open_into(p, r)
+    }
+    if dialog == "saveas" {
+        if fs.extension(p) == "" { p = p + ".md" }
+        i = after_save_idx
+        then = after_save_then
+        after_save_idx = -1
+        after_save_then = ""
+        dialog = ""
+        dialog_err = ""
+        if i < 0 || i >= tabs.len() { return }
+        t = tabs[i]
+        w = fs.write(p, t["content"])
+        if type_of(w) == "error" {
+            status_msg = "保存失败"
+            return
+        }
+        t["path"] = p
+        t["name"] = fs.basename(p)
+        t["saved"] = t["content"]
+        status_msg = "已保存 " + p
+        if then == "close" { really_close(i) }
+    }
+}
+
+dialog_cancel = fn() {
+    k = after_save_then
+    after_save_then = ""
+    after_save_idx = -1
+    dialog = ""
+    dialog_err = ""
+    if k == "exit" {
+        exit_requested = false
+        exit_skip = []
+    }
+}
+
+close_find = fn() {
+    find_open = false
+    find_hit = 0
+    find_n = 0
+    find_lineno = 0
+    find_line = ""
+}
+
+// 查找全部匹配位置（字节下标，大小写不敏感，不重叠）
+find_all = fn(text, q) {
+    res = []
+    if q == "" { return res }
+    hay = text.lower()
+    needle = q.lower()
+    nlen = needle.len()
+    if nlen == 0 { return res }
+    i = 0
+    while i < hay.len() {
+        k = hay.slice(i, hay.len()).index_of(needle)
+        if k < 0 { break }
+        res.push(i + k)
+        i = i + k + nlen
+    }
+    return res
+}
+
+// 匹配所在行预览：pre 是行内匹配前文，tail 是自匹配起的余文（均按 rune 截断，
+// 保证匹配内容始终可见）
+line_preview = fn(pre, tail) {
+    ps = pre.replace("\t", " ")
+    ts = tail.replace("\t", " ")
+    p = ps.split("")
+    r = ts.split("")
+    if p.len() > 40 { ps = "…" + p.slice(p.len() - 40, p.len()).join("") }
+    if r.len() > 40 { ts = r.slice(0, 40).join("") + "…" }
+    return ps + ts
+}
+
+// 去成对行内标记：strip_pair("**x**", "**", "**") -> "x"
+strip_pair = fn(s, open, close) {
+    res = ""
+    rest = s
+    while true {
+        i = rest.index_of(open)
+        if i < 0 {
+            res = res + rest
+            break
+        }
+        j = rest.slice(i + open.len(), rest.len()).index_of(close)
+        if j < 0 {
+            res = res + rest
+            break
+        }
+        res = res + rest.slice(0, i) + rest.slice(i + open.len(), i + open.len() + j)
+        rest = rest.slice(i + open.len() + j + close.len(), rest.len())
+    }
+    return res
+}
+
+// 行内图片 ![alt](src) -> alt
+strip_imgs = fn(s) {
+    res = ""
+    rest = s
+    while true {
+        i = rest.index_of("![")
+        if i < 0 {
+            res = res + rest
+            break
+        }
+        j = rest.slice(i + 2, rest.len()).index_of("](")
+        if j < 0 {
+            res = res + rest
+            break
+        }
+        k = rest.slice(i + 2 + j + 2, rest.len()).index_of(")")
+        if k < 0 {
+            res = res + rest
+            break
+        }
+        alt = rest.slice(i + 2, i + 2 + j)
+        res = res + rest.slice(0, i) + alt
+        rest = rest.slice(i + 2 + j + 2 + k + 1, rest.len())
+    }
+    return res
+}
+
+// 链接 [text](url) -> text
+strip_links = fn(s) {
+    res = ""
+    rest = s
+    while true {
+        i = rest.index_of("[")
+        if i < 0 {
+            res = res + rest
+            break
+        }
+        j = rest.slice(i + 1, rest.len()).index_of("](")
+        if j < 0 {
+            res = res + rest
+            break
+        }
+        k = rest.slice(i + 1 + j + 2, rest.len()).index_of(")")
+        if k < 0 {
+            res = res + rest
+            break
+        }
+        t = rest.slice(i + 1, i + 1 + j)
+        res = res + rest.slice(0, i) + t
+        rest = rest.slice(i + 1 + j + 2 + k + 1, rest.len())
+    }
+    return res
+}
+
+strip_inline = fn(s) {
+    r = strip_imgs(s)
+    r = strip_links(r)
+    r = strip_pair(r, "**", "**")
+    r = strip_pair(r, "__", "__")
+    r = strip_pair(r, "~~", "~~")
+    r = strip_pair(r, "`", "`")
+    r = strip_pair(r, "*", "*")
+    r = strip_pair(r, "_", "_")
+    return r
+}
+
+heading_level = fn(t) {
+    n = 0
+    while n < 6 && n < t.len() && t.slice(n, n + 1) == "#" {
+        n = n + 1
+    }
+    if n == 0 { return 0 }
+    if n < t.len() && t.slice(n, n + 1) != " " { return 0 }
+    return n
+}
+
+hr_line = fn(t) {
+    s = t.replace(" ", "")
+    if s.len() < 3 { return false }
+    c = s.slice(0, 1)
+    if c != "-" && c != "*" && c != "_" { return false }
+    return s.replace(c, "") == ""
+}
+
+list_prefix = fn(t) {
+    if t.starts_with("- ") || t.starts_with("* ") || t.starts_with("+ ") { return 2 }
+    return 0
+}
+
+// 有序列表标记长度（如 "3. " -> 3），不是有序列表返回 0
+ol_marker = fn(t) {
+    i = 0
+    while i < t.len() && i < 9 {
+        if !"0123456789".contains(t.slice(i, i + 1)) { break }
+        i = i + 1
+    }
+    if i == 0 { return 0 }
+    if i + 1 >= t.len() { return 0 }
+    if t.slice(i, i + 1) != "." { return 0 }
+    if t.slice(i + 1, i + 2) != " " { return 0 }
+    return i + 2
+}
+
+is_table_sep = fn(t) {
+    s = t.replace(" ", "").replace("|", "").replace("-", "").replace(":", "")
+    if s != "" { return false }
+    return t.contains("-")
+}
+
+split_row = fn(t) {
+    raw = t.split("|")
+    cells = []
+    k = 0
+    while k < raw.len() {
+        c = raw[k].trim()
+        if !(k == 0 && c == "") && !(k == raw.len() - 1 && c == "") {
+            cells.push(strip_inline(c))
+        }
+        k = k + 1
+    }
+    return cells
+}
+
+// 整行就是 ![alt](src) 时返回 {ok, alt, src}
+img_parts = fn(t) {
+    r = {"ok": false, "alt": "", "src": ""}
+    if !t.starts_with("![") { return r }
+    j = t.slice(2, t.len()).index_of("](")
+    if j < 0 { return r }
+    k = t.slice(2 + j + 2, t.len()).index_of(")")
+    if k < 0 { return r }
+    if 2 + j + 2 + k + 1 != t.len() { return r }
+    r["ok"] = true
+    r["alt"] = t.slice(2, 2 + j)
+    r["src"] = t.slice(2 + j + 2, 2 + j + 2 + k)
+    return r
+}
+
+block_start = fn(t) {
+    if t.starts_with("```") { return true }
+    if heading_level(t) > 0 { return true }
+    if hr_line(t) { return true }
+    if t.starts_with(">") { return true }
+    if list_prefix(t) > 0 { return true }
+    if ol_marker(t) > 0 { return true }
+    return false
+}
+
+// 解析 markdown 为块列表。块：h / hr / quote / code / ul / ol / p / table / img
+parse_md = fn(text) {
+    blocks = []
+    lines = text.split("\n")
+    i = 0
+    while i < lines.len() {
+        ln = lines[i]
+        trimmed = ln.trim()
+        if trimmed == "" {
+            i = i + 1
+            continue
+        }
+        if trimmed.starts_with("```") {
+            lang = trimmed.slice(3, trimmed.len()).trim()
+            j = i + 1
+            code_lines = []
+            while j < lines.len() && !lines[j].trim().starts_with("```") {
+                code_lines.push(lines[j])
+                j = j + 1
+            }
+            blocks.push({"kind": "code", "lang": lang, "lines": code_lines})
+            i = j + 1
+            continue
+        }
+        lv = heading_level(trimmed)
+        if lv > 0 {
+            blocks.push({"kind": "h", "level": lv, "text": strip_inline(trimmed.slice(lv, trimmed.len()).trim())})
+            i = i + 1
+            continue
+        }
+        if hr_line(trimmed) {
+            blocks.push({"kind": "hr"})
+            i = i + 1
+            continue
+        }
+        if trimmed.starts_with(">") {
+            blocks.push({"kind": "quote", "text": strip_inline(trimmed.slice(1, trimmed.len()).trim())})
+            i = i + 1
+            continue
+        }
+        if trimmed.contains("|") && i + 1 < lines.len() && is_table_sep(lines[i + 1].trim()) {
+            header = split_row(trimmed)
+            j = i + 2
+            rows = []
+            while j < lines.len() && lines[j].trim() != "" && lines[j].contains("|") {
+                rows.push(split_row(lines[j].trim()))
+                j = j + 1
+            }
+            blocks.push({"kind": "table", "header": header, "rows": rows})
+            i = j
+            continue
+        }
+        ip = img_parts(trimmed)
+        if ip["ok"] {
+            blocks.push({"kind": "img", "alt": ip["alt"], "src": ip["src"]})
+            i = i + 1
+            continue
+        }
+        pl = list_prefix(trimmed)
+        if pl > 0 {
+            blocks.push({"kind": "ul", "text": strip_inline(trimmed.slice(2, trimmed.len()).trim())})
+            i = i + 1
+            continue
+        }
+        om = ol_marker(trimmed)
+        if om > 0 {
+            blocks.push({"kind": "ol", "num": trimmed.slice(0, om - 1), "text": strip_inline(trimmed.slice(om, trimmed.len()).trim())})
+            i = i + 1
+            continue
+        }
+        para = [strip_inline(ln)]
+        j = i + 1
+        while j < lines.len() && lines[j].trim() != "" && !block_start(lines[j].trim()) {
+            para.push(strip_inline(lines[j]))
+            j = j + 1
+        }
+        blocks.push({"kind": "p", "lines": para})
+        i = j
+    }
+    return blocks
+}
+
+// 块级图片路径解析：http(s) 不加载；相对路径先按文档目录再按工作目录找
+resolve_img = fn(src) {
+    if src.starts_with("http://") || src.starts_with("https://") { return "" }
+    if src.starts_with("/") {
+        if fs.is_file(src) { return src }
+        return ""
+    }
+    if cur >= 0 {
+        p = tabs[cur]["path"]
+        if p != "" {
+            c1 = fs.join(fs.dirname(p), src)
+            if fs.is_file(c1) { return c1 }
+        }
+    }
+    if fs.is_file(src) { return src }
+    return ""
+}
+
+render_one = fn(c, b, theme) {
+    k = b["kind"]
+    if k == "h" {
+        lv = b["level"]
+        sz = 15
+        if lv == 1 { sz = 21 }
+        if lv == 2 { sz = 18 }
+        mygo.text(c, b["text"], size: sz, bold: true)
+    }
+    if k == "hr" { mygo.divider(c) }
+    if k == "quote" { mygo.text(c, "▏ " + b["text"], muted: true) }
+    if k == "ul" { mygo.text(c, "  • " + b["text"]) }
+    if k == "ol" { mygo.text(c, "  " + b["num"] + " " + b["text"]) }
+    if k == "code" {
+        mygo.column(c, fn() {
+            ls = b["lines"]
+            j = 0
+            while j < ls.len() {
+                mygo.text(c, "  " + ls[j], size: 13, color: theme.accent)
+                j = j + 1
+            }
+        }, gap: 2)
+    }
+    if k == "p" {
+        mygo.column(c, fn() {
+            ls2 = b["lines"]
+            j2 = 0
+            while j2 < ls2.len() {
+                mygo.text(c, ls2[j2], size: 14)
+                j2 = j2 + 1
+            }
+        }, gap: 2)
+    }
+    if k == "table" {
+        mygo.text(c, b["header"].join("   │   "), size: 13, bold: true)
+        mygo.divider(c)
+        rs = b["rows"]
+        j3 = 0
+        while j3 < rs.len() {
+            mygo.text(c, rs[j3].join("   │   "), size: 13)
+            j3 = j3 + 1
+        }
+    }
+    if k == "img" {
+        p6 = resolve_img(b["src"])
+        if p6 != "" {
+            mygo.image(c, p6, width: 300)
+            if b["alt"] != "" { mygo.text(c, b["alt"], size: 12, muted: true) }
+        } else {
+            tx6 = b["alt"]
+            if tx6 == "" { tx6 = b["src"] }
+            mygo.text(c, "[图片] " + tx6, size: 12, muted: true)
+        }
+    }
+}
+
+render_blocks = fn(c, blocks, theme) {
+    i = 0
+    while i < blocks.len() {
+        render_one(c, blocks[i], theme)
+        i = i + 1
+    }
+}
+
+render_dialog = fn(c) {
+    if dialog == "" { return }
+    title_d = "打开文件（输入路径）"
+    if dialog == "saveas" { title_d = "另存为（输入路径，无扩展名自动加 .md）" }
+    mygo.column(c, fn() {
+        mygo.text(c, title_d, size: 14, bold: true)
+        mygo.text(c, "工作目录: " + fs.cwd(), size: 12, muted: true)
+        dialog_input = mygo.input(c, dialog_input, width: 520, on_submit: fn(x) {
+            dialog_input = x
+            dialog_ok()
+        })
+        if dialog_err != "" { mygo.text(c, dialog_err, size: 12, color: "#e05252") }
+        mygo.row(c, fn() {
+            if mygo.button(c, "确定", width: 64, primary: true) { dialog_ok() }
+            if mygo.button(c, "取消", width: 64) { dialog_cancel() }
+        }, gap: 6)
+    }, gap: 6, padding: 8, key: "dialog")
+}
+
+render_ask = fn(c) {
+    if ask_kind == "" { return }
+    if ask_idx < 0 || ask_idx >= tabs.len() {
+        ask_kind = ""
+        ask_idx = -1
+        ask_err = ""
+        return
+    }
+    nm4 = tabs[ask_idx]["name"]
+    q = "「{nm4}」有未保存的更改。是否保存？"
+    mygo.column(c, fn() {
+        mygo.text(c, q, size: 14, bold: true)
+        if ask_err != "" { mygo.text(c, ask_err, size: 12, color: "#e05252") }
+        mygo.row(c, fn() {
+            if mygo.button(c, "保存", width: 64, primary: true) {
+                k5 = ask_kind
+                j5 = ask_idx
+                r5 = save_tab(j5)
+                if r5 == "saveas" {
+                    open_saveas(j5, k5)
+                } else if r5 == "error" {
+                    ask_err = "保存失败"
+                } else {
+                    ask_kind = ""
+                    ask_idx = -1
+                    ask_err = ""
+                    if k5 == "close" { really_close(j5) }
+                }
+            }
+            if mygo.button(c, "不保存", width: 72) { discard_ask() }
+            if mygo.button(c, "取消", width: 64) { cancel_ask() }
+        }, gap: 6)
+    }, gap: 6, padding: 8, key: "ask")
+}
+
+view = fn(c) {
+    // 退出流程：按标签顺序逐个询问未保存标签
+    if exit_requested && ask_kind == "" && dialog == "" {
+        d = first_dirty(exit_skip)
+        if d < 0 {
+            mygo.quit()
+            return
+        }
+        ask_kind = "exit"
+        ask_idx = d
+        ask_err = ""
+    }
+    // 快捷键（焦点在编辑器内时部分组合键由编辑器优先消费）
+    if mygo.key(c, "ctrl+t") || mygo.key(c, "ctrl+n") { new_tab() }
+    if mygo.key(c, "ctrl+o") { open_dialog() }
+    if mygo.key(c, "ctrl+s") { save_current() }
+    if mygo.key(c, "ctrl+shift+s") { open_saveas(cur, "") }
+    if mygo.key(c, "ctrl+f") && cur >= 0 {
+        if find_open { close_find() } else { find_open = true; find_hit = 0 }
+    }
+    if mygo.key(c, "ctrl+w") { request_close(cur) }
+    if mygo.key(c, "ctrl+tab") && tabs.len() > 1 { switch_tab((cur + 1) % tabs.len()) }
+    if mygo.key(c, "ctrl+shift+tab") && tabs.len() > 1 { switch_tab((cur - 1 + tabs.len()) % tabs.len()) }
+    if find_open && mygo.key(c, "escape") { close_find() }
+
+    theme = mygo.theme(c)
+
+    mygo.column(c, fn() {
+        render_dialog(c)
+        render_ask(c)
+        // 菜单栏：原生下拉菜单，不可用的项置灰
+        file_items = ["新建|Ctrl+N", "打开…|Ctrl+O", "---"]
+        if cur < 0 {
+            file_items.push("!保存|Ctrl+S")
+            file_items.push("!另存为…|Ctrl+Shift+S")
+        } else {
+            file_items.push("保存|Ctrl+S")
+            file_items.push("另存为…|Ctrl+Shift+S")
+        }
+        file_items.push("---")
+        file_items.push("退出")
+        edit_items = []
+        if cur < 0 { edit_items.push("!查找…|Ctrl+F") } else { edit_items.push("查找…|Ctrl+F") }
+        edit_items.push("---")
+        if tabs.len() == 0 { edit_items.push("!关闭标签|Ctrl+W") } else { edit_items.push("关闭标签|Ctrl+W") }
+        if tabs.len() > 1 {
+            edit_items.push("下一个标签|Ctrl+Tab")
+            edit_items.push("上一个标签|Ctrl+Shift+Tab")
+        } else {
+            edit_items.push("!下一个标签|Ctrl+Tab")
+            edit_items.push("!上一个标签|Ctrl+Shift+Tab")
+        }
+        mygo.row(c, fn() {
+            mygo.toolbar(c, fn() {
+                mf = mygo.menu_button(c, "文件", file_items)
+                if mf == "新建" { new_tab() }
+                if mf == "打开…" { open_dialog() }
+                if mf == "保存" { save_current() }
+                if mf == "另存为…" { open_saveas(cur, "") }
+                if mf == "退出" {
+                    exit_requested = true
+                    exit_skip = []
+                }
+                me = mygo.menu_button(c, "编辑", edit_items)
+                if me == "查找…" {
+                    if find_open { close_find() } else { find_open = true; find_hit = 0 }
+                }
+                if me == "关闭标签" { request_close(cur) }
+                if me == "下一个标签" && tabs.len() > 1 { switch_tab((cur + 1) % tabs.len()) }
+                if me == "上一个标签" && tabs.len() > 1 { switch_tab((cur - 1 + tabs.len()) % tabs.len()) }
+                mv = mygo.menu_button(c, "视图", ["平分编辑与预览"])
+                if mv == "平分编辑与预览" {
+                    wz = mygo.win_size(c)
+                    if wz[0] > 60 { split_req = (wz[0] - 25) / 2 }
+                }
+                mh = mygo.menu_button(c, "帮助", ["关于"])
+                if mh == "关于" { status_msg = "mygo 原生 Markdown 浏览器 · Codong + mygo" }
+                mygo.spacer(c)
+            }, grow: 1)
+        }, key: "toolbar", gap: 0)
+        mygo.row(c, fn() {
+            i = 0
+            while i < tabs.len() {
+                lab = tabs[i]["name"]
+                lr = lab.split("")
+                if lr.len() > 12 { lab = lr.slice(0, 12).join("") + "…" }
+                if is_dirty(tabs[i]) { lab = "● " + lab }
+                if mygo.button(c, lab, width: 130, primary: i == cur) { switch_tab(i) }
+                if mygo.button(c, "✕", width: 34) { request_close(i) }
+                i = i + 1
+            }
+            if mygo.button(c, "＋", width: 34) { new_tab() }
+        }, gap: 4, key: "tabbar")
+        if find_open {
+            mygo.row(c, fn() {
+                find_query = mygo.input(c, find_query, placeholder: "查找(Ctrl+F)…", width: 240, autofocus: true, on_submit: fn(t) {
+                    find_query = t
+                    find_hit = find_hit + 1
+                })
+                if mygo.button(c, "↑", width: 34) { find_hit = find_hit - 1 }
+                if mygo.button(c, "↓", width: 34) { find_hit = find_hit + 1 }
+                find_n = 0
+                find_lineno = 0
+                find_line = ""
+                if cur >= 0 {
+                    text0 = tabs[cur]["content"]
+                    idxs = find_all(text0, find_query)
+                    find_n = idxs.len()
+                    if find_n > 0 {
+                        if find_hit >= find_n { find_hit = 0 }
+                        if find_hit < 0 { find_hit = find_n - 1 }
+                        k = idxs[find_hit]
+                        lower0 = text0.lower()
+                        head = lower0.slice(0, k)
+                        pre = head.split("\n")[head.split("\n").len() - 1]
+                        tail = lower0.slice(k, lower0.len()).split("\n")[0]
+                        find_lineno = head.split("\n").len()
+                        find_line = line_preview(pre, tail)
+                    } else {
+                        find_hit = 0
+                    }
+                }
+                if find_query == "" {
+                    mygo.text(c, "输入查找内容", size: 12, muted: true)
+                } else if find_n == 0 {
+                    mygo.text(c, "无匹配", size: 12, color: "#e05252")
+                } else {
+                    mygo.text(c, "{find_hit + 1}/{find_n}", size: 12)
+                    mygo.text(c, "第 {find_lineno} 行: {find_line}", size: 12, muted: true)
+                }
+                if mygo.button(c, "✕", width: 34) { close_find() }
+            }, gap: 6, key: "findbar")
+        }
+        // 主区域：分隔条撑满剩余高度，两个窗格都有内边距，内容不贴分隔线
+        mygo.row(c, fn() {
+            split_w = mygo.split(c, fn() {
+                if cur >= 0 {
+                    tt_cur = tabs[cur]
+                    before = tt_cur["content"]
+                    tt_cur["content"] = mygo.text_area(c, before, fill: true)
+                    if tt_cur["content"] != before { status_msg = "" }
+                } else {
+                    mygo.column(c, fn() {
+                        mygo.text(c, "没有打开的标签页", muted: true, align: "center", fill: true)
+                        mygo.text(c, "点击「新建」或按 Ctrl+T 开始", size: 12, muted: true, align: "center", fill: true)
+                    }, fill: true, center: true)
+                }
+            }, fn() {
+                mygo.scroll(c, fn() {
+                    mygo.column(c, fn() {
+                        if cur >= 0 {
+                            text1 = tabs[cur]["content"]
+                            if !cache_ok || text1 != cache_src {
+                                cache_src = text1
+                                cache_blocks = parse_md(text1)
+                                cache_ok = true
+                            }
+                            render_blocks(c, cache_blocks, theme)
+                        } else {
+                            mygo.text(c, "（没有打开的标签页）", muted: true)
+                        }
+                    }, padding: 12, gap: 6)
+                }, fill: true)
+            }, fill: true, pos: split_req)
+            split_req = 0.0
+        }, key: "main", grow: 1, gap: 0)
+        st_line = "（无标签页）"
+        if cur >= 0 {
+            nm2 = tabs[cur]["name"]
+            nchars = tabs[cur]["content"].split("").len()
+            nlines = tabs[cur]["content"].split("\n").len()
+            st_line = "{nm2} · {nchars} 字符 · {nlines} 行"
+        }
+        if status_msg != "" { st_line = st_line + "  —— " + status_msg }
+        mygo.text(c, st_line, size: 12, muted: true, fill: true)
+    }, padding: 12, gap: 8, fill: true)
+
+    title2 = "Markdown 浏览器"
+    if cur >= 0 {
+        nm3 = tabs[cur]["name"]
+        if is_dirty(tabs[cur]) {
+            title2 = "● {nm3} - Markdown 浏览器"
+        } else {
+            title2 = "{nm3} - Markdown 浏览器"
+        }
+    }
+    if title2 != last_title {
+        mygo.set_title(c, title: title2)
+        last_title = title2
+    }
+}
+
+welcome = """# 欢迎使用 Markdown 浏览器
+
+左边 **编辑**，右边 **渲染**，实时预览。
+
+## 功能
+
+- 编辑：原生文本框，Ctrl+C/V/X/A 复制粘贴，Ctrl+Z / Ctrl+Y 撤销重做
+- 标签页：顶栏 ＋ 新建，✕ 关闭，● 表示未保存
+- 保存：Ctrl+S 直接保存，未命名文件弹出路径输入框
+- 查找：Ctrl+F 打开，Enter / ↓ 下一个，↑ 上一个，显示匹配行号
+- 退出：Ctrl+W 关闭标签页，标题栏 ✕ 或「退出」逐个询问未保存文件
+
+> 试试在左侧修改文字，右侧预览会实时更新。
+
+| 语法 | 示例 |
+| --- | --- |
+| 粗体 | **加粗** |
+| 行内代码 | `code` |
+
+```go
+func main() \{
+    fmt.Println("Hello, Codong!")
+\}
+```
+"""
+
+all_args = args.all()
+if all_args.len() > 0 {
+    p0 = all_args[0]
+    if fs.exists(p0) && fs.is_file(p0) {
+        r0 = fs.read(p0)
+        if type_of(r0) == "string" {
+            tabs.push({"name": fs.basename(p0), "path": p0, "content": r0, "saved": r0})
+            cur = 0
+            status_msg = "已打开 " + p0
+        }
+    }
+    if tabs.len() == 0 {
+        // 文件不存在或读取失败：以该文件名新建空标签页（保存时写入该路径）
+        tabs.push({"name": fs.basename(p0), "path": p0, "content": "", "saved": ""})
+        cur = 0
+    }
+} else {
+    tabs.push({"name": "(未命名)", "path": "", "content": welcome, "saved": welcome})
+    cur = 0
+}
+
+mygo.on_close(fn() {
+    if ask_kind == "" && dialog == "" {
+        exit_requested = true
+        exit_skip = []
+    }
+})
+
+mygo.run(view, title: "Markdown 浏览器", width: 980, height: 660)

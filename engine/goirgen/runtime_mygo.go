@@ -24,6 +24,12 @@ var cMygoWin *mygo.Window
 
 var cMygoImages = map[string]*ui.Bitmap{}
 
+// cMygoCloseHandler, set by mygo.on_close, asks before the window's ✕
+// closes it. cMygoExiting lets mygo.quit through without asking.
+var cMygoCloseHandler Value
+
+var cMygoExiting bool
+
 // cMygoOpts carries the named options shared by the mygo widgets. Each
 // widget reads the fields it understands and ignores the rest.
 type cMygoOpts struct {
@@ -58,13 +64,19 @@ type cMygoOpts struct {
 
 	placeholder string
 
+	autofocus bool
+
 	align string
 
 	selectable bool
 
+	key string
+
 	lo float64
 
 	hi float64
+
+	pos float64
 }
 
 func cMygoCtx(v Value) *ui.Context {
@@ -93,6 +105,20 @@ func cMygoRun(view Value, title string, w int, h int) Value {
 
 		})
 
+		cMygoWin.OnClose(func(e *mygo.CloseEvent) {
+
+			if cMygoCloseHandler != nil && !cMygoExiting {
+
+				e.PreventDefault()
+
+				cCallFn(cMygoCloseHandler)
+
+				cMygoWin.Invalidate()
+
+			}
+
+		})
+
 	})
 
 	if err := mygo.App.Run(); err != nil {
@@ -115,7 +141,20 @@ func cMygoFrame(c *ui.Context) {
 
 func cMygoQuit() Value {
 
+	cMygoExiting = true
+
 	mygo.App.Quit()
+
+	return nil
+
+}
+
+// cMygoOnClose registers fn to run when the window is about to close by its
+// ✕: the close is held off, fn runs, and the view rebuilds to ask what to
+// do. Call mygo.quit() from fn to close anyway.
+func cMygoOnClose(handler Value) Value {
+
+	cMygoCloseHandler = handler
 
 	return nil
 
@@ -302,6 +341,42 @@ func cMygoShortcut(c *ui.Context, name string) bool {
 
 		return chk(0, ui.KeyTab)
 
+	case "ctrl+n":
+
+		return chk(ui.Ctrl, ui.KeyN)
+
+	case "ctrl+o":
+
+		return chk(ui.Ctrl, ui.KeyO)
+
+	case "ctrl+s":
+
+		return chk(ui.Ctrl, ui.KeyS)
+
+	case "ctrl+shift+s":
+
+		return chk(ui.Ctrl|ui.Shift, ui.KeyS)
+
+	case "ctrl+t":
+
+		return chk(ui.Ctrl, ui.KeyT)
+
+	case "ctrl+w":
+
+		return chk(ui.Ctrl, ui.KeyW)
+
+	case "ctrl+f":
+
+		return chk(ui.Ctrl, ui.KeyF)
+
+	case "ctrl+tab":
+
+		return chk(ui.Ctrl, ui.KeyTab)
+
+	case "ctrl+shift+tab":
+
+		return chk(ui.Ctrl|ui.Shift, ui.KeyTab)
+
 	}
 
 	return false
@@ -310,7 +385,11 @@ func cMygoShortcut(c *ui.Context, name string) bool {
 
 // cMygoKey reports whether the named key was pressed in the frame being
 // built: "0" to "9", ".", "+", "-", "*", "/", "=", "enter", "backspace",
-// "escape", "delete", "c", "up", "down", "left", "right", "space", "tab".
+// "escape", "delete", "c", "up", "down", "left", "right", "space", "tab",
+// and the application shortcuts "ctrl+n", "ctrl+o", "ctrl+s", "ctrl+shift+s",
+// "ctrl+t", "ctrl+w", "ctrl+f", "ctrl+tab", "ctrl+shift+tab". A shortcut
+// fires when no focused widget takes the key for itself, so Ctrl+C, Ctrl+V
+// and the like still belong to a text input being edited.
 // On the main keyboard "+" and "*" sit behind Shift on most layouts while
 // the numpad sends them bare: both shapes answer, and the numpad digits,
 // "." and Enter work too (with NumLock on, as in any application).
@@ -350,6 +429,8 @@ func cMygoKeys(ctxV Value) Value {
 }
 
 func cMygoBox(el *ui.Element, o cMygoOpts) *ui.Element {
+
+	if o.key != "" { el = el.Key(o.key) }
 
 	if o.fill { el = el.Fill() }
 
@@ -402,6 +483,173 @@ func cMygoScroll(ctxV Value, children Value, o cMygoOpts) Value {
 	cMygoBox(ui.Scroll(c), o).Children(func() { cCallFn(children) })
 
 	return nil
+
+}
+
+// cMygoSplitSize is the width of the first pane of the cMygoSplit split, in
+// DIPs. One split per app; pos sets it (0 keeps it), and the call returns the
+// current value.
+var cMygoSplitSize float32 = 350
+
+func cMygoSplit(ctxV Value, first Value, second Value, o cMygoOpts) Value {
+
+	c := cMygoCtx(ctxV)
+
+	if c == nil || first == nil || second == nil { return float64(cMygoSplitSize) }
+
+	if o.pos > 0 { cMygoSplitSize = float32(o.pos) }
+
+	o.key = "" // the divider handles input at creation: Key would panic
+
+	cMygoBox(ui.Split(c, &cMygoSplitSize, func() { cCallFn(first) }, func() { cCallFn(second) }), o)
+
+	return float64(cMygoSplitSize)
+
+}
+
+// cMygoToolbar stacks the controls fn builds in a row, as a menu bar: its
+// buttons take no face of theirs until hovered. Wrap it in a keyed element
+// (mygo.row(..., key:)) when what is above it can change between frames.
+func cMygoToolbar(ctxV Value, children Value, o cMygoOpts) Value {
+
+	c := cMygoCtx(ctxV)
+
+	if c == nil || children == nil { return nil }
+
+	o.key = "" // a Toolbar handles input as it is created: Key would panic
+
+	cMygoBox(ui.Toolbar(c, func() { cCallFn(children) }), o)
+
+	return nil
+
+}
+
+// cMygoMenuButton shows a button that opens a menu of items below it when
+// clicked, as a menu bar's do. Items is a list of strings: "标签" shows an
+// item, "标签|Ctrl+S" also shows the shortcut where the platform does,
+// "---" a separator and "!标签" a disabled item. The call returns the label
+// of the item chosen in this frame, else "":
+//
+//	if mygo.menu_button(c, "文件", ["新建|Ctrl+N", "---", "退出"]) == "退出" { mygo.quit() }
+func cMygoMenuButton(ctxV Value, label string, itemsV Value, o cMygoOpts) Value {
+
+	c := cMygoCtx(ctxV)
+
+	if c == nil { return "" }
+
+	items := cMygoMenuItems(itemsV)
+
+	chosen := ""
+
+	el := ui.Button(c, label)
+
+	el.Menu(func(m *ui.Menu) {
+		for _, spec := range items {
+			if spec == "---" { m.Separator(); continue }
+			disabled := false
+			if strings.HasPrefix(spec, "!") { disabled = true; spec = spec[1:] }
+			accel := ""
+			if i := strings.Index(spec, "|"); i >= 0 { accel = spec[i+1:]; spec = spec[:i] }
+			it := m.Item(spec).Disabled(disabled)
+			if mods, key, ok := cMygoShortcutKeys(accel); ok { it.Shortcut(mods, key) }
+			if it.Chosen() { chosen = spec }
+		}
+	})
+
+	if o.width > 0 { el = el.Width(float32(o.width)) }
+
+	if o.disabled { el = el.Disabled(true) }
+
+	return chosen
+
+}
+
+// cMygoMenuItems reads a menu's items: a list of strings, empties dropped.
+func cMygoMenuItems(v Value) []string {
+
+	items := []string{}
+
+	if list := toList(v); list != nil {
+		for _, el := range list.Elements {
+			if s := toString(el); s != "" { items = append(items, s) }
+		}
+	}
+
+	return items
+
+}
+
+// cMygoShortcutKeys reads a shortcut like "Ctrl+Shift+S" as the modifiers and
+// key it names, "" for none.
+func cMygoShortcutKeys(s string) (ui.Modifiers, ui.Key, bool) {
+
+	if s == "" { return 0, 0, false }
+
+	parts := strings.Split(s, "+")
+
+	var mods ui.Modifiers
+
+	for i, part := range parts {
+		if i == len(parts)-1 {
+			key, ok := cMygoKeyByName(part)
+			return mods, key, ok
+		}
+		switch strings.ToLower(part) {
+		case "ctrl", "control":
+			mods |= ui.Ctrl
+		case "shift":
+			mods |= ui.Shift
+		case "alt":
+			mods |= ui.Alt
+		case "super", "cmd", "command":
+			mods |= ui.Super
+		default:
+			return 0, 0, false
+		}
+	}
+
+	return 0, 0, false
+
+}
+
+// cMygoKeysByName maps the key names shortcuts use to keys.
+var cMygoKeysByName = map[string]ui.Key{
+	"enter": ui.KeyEnter, "return": ui.KeyEnter, "escape": ui.KeyEscape,
+	"tab": ui.KeyTab, "space": ui.KeySpace, "backspace": ui.KeyBackspace,
+	"delete": ui.KeyDelete, "insert": ui.KeyInsert, "home": ui.KeyHome, "end": ui.KeyEnd,
+	"pageup": ui.KeyPageUp, "pagedown": ui.KeyPageDown,
+	"left": ui.KeyLeft, "right": ui.KeyRight, "up": ui.KeyUp, "down": ui.KeyDown,
+	"f1": ui.KeyF1, "f2": ui.KeyF2, "f3": ui.KeyF3, "f4": ui.KeyF4, "f5": ui.KeyF5,
+	"f6": ui.KeyF6, "f7": ui.KeyF7, "f8": ui.KeyF8, "f9": ui.KeyF9, "f10": ui.KeyF10,
+	"f11": ui.KeyF11, "f12": ui.KeyF12,
+}
+
+func cMygoKeyByName(name string) (ui.Key, bool) {
+
+	if k, ok := cMygoKeysByName[strings.ToLower(name)]; ok { return k, true }
+
+	if len(name) == 1 {
+		c := name[0]
+		if c >= 'a' && c <= 'z' { return ui.KeyA + ui.Key(c-'a'), true }
+		if c >= 'A' && c <= 'Z' { return ui.KeyA + ui.Key(c-'A'), true }
+		if c >= '0' && c <= '9' { return ui.Key0 + ui.Key(c-'0'), true }
+	}
+
+	return 0, false
+
+}
+
+// cMygoWinSize returns the window's content size in DIPs as [width, height],
+// so a view can lay out against it (e.g. half of it).
+func cMygoWinSize(ctxV Value) Value {
+
+	c := cMygoCtx(ctxV)
+
+	if c == nil { return cList(0.0, 0.0) }
+
+	w, h := c.Size()
+
+	return cList(float64(w), float64(h))
 
 }
 
@@ -611,6 +859,8 @@ func cMygoInput(ctxV Value, textV Value, submitFn Value, o cMygoOpts) Value {
 
 	if o.placeholder != "" { el = el.Placeholder(o.placeholder) }
 
+	if o.autofocus { el = el.AutoFocus() }
+
 	if o.width > 0 { el = el.Width(float32(o.width)) }
 
 	submitted := el.Submitted()
@@ -637,6 +887,8 @@ func cMygoTextArea(ctxV Value, textV Value, o cMygoOpts) Value {
 	el := ui.TextArea(c, &text)
 
 	if o.placeholder != "" { el = el.Placeholder(o.placeholder) }
+
+	if o.fill { el = el.Fill() }
 
 	if o.width > 0 { el = el.Width(float32(o.width)) }
 

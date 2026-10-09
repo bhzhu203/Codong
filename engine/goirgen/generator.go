@@ -1551,9 +1551,9 @@ func (g *Generator) genMygoCall(method string, args []string, named map[string]p
 			field("grow", "toFloat") + field("padding", "toFloat") + field("size", "toFloat") +
 			field("bold", "isTruthy") + field("italic", "isTruthy") + field("color", "toString") +
 			field("muted", "isTruthy") + field("primary", "isTruthy") + field("disabled", "isTruthy") +
-			field("placeholder", "toString") + field("align", "toString") +
-			field("selectable", "isTruthy") +
-			field("lo", "toFloat") + field("hi", "toFloat")
+			field("placeholder", "toString") + field("autofocus", "isTruthy") + field("align", "toString") +
+			field("selectable", "isTruthy") + field("key", "toString") +
+			field("lo", "toFloat") + field("hi", "toFloat") + field("pos", "toFloat")
 		return "cMygoOpts{" + lit + "}"
 	}
 	switch method {
@@ -1576,6 +1576,12 @@ func (g *Generator) genMygoCall(method string, args []string, named map[string]p
 			getArg(0, "nil"), title, w, h)
 	case "quit":
 		return "cMygoQuit()"
+	case "on_close":
+		handler := getArg(0, "nil")
+		if v, ok := named["fn"]; ok {
+			handler = g.genExpr(v)
+		}
+		return fmt.Sprintf("cMygoOnClose(%s)", handler)
 	case "set_title":
 		title := getArg(1, `""`)
 		if v, ok := named["title"]; ok {
@@ -1595,6 +1601,14 @@ func (g *Generator) genMygoCall(method string, args []string, named map[string]p
 	case "column", "row", "scroll":
 		fn := map[string]string{"column": "cMygoColumn", "row": "cMygoRow", "scroll": "cMygoScroll"}[method]
 		return fmt.Sprintf("%s(%s, %s, %s)", fn, getArg(0, "nil"), getArg(1, "nil"), mygoOpts(nil))
+	case "split":
+		return fmt.Sprintf("cMygoSplit(%s, %s, %s, %s)", getArg(0, "nil"), getArg(1, "nil"), getArg(2, "nil"), mygoOpts(nil))
+	case "toolbar":
+		return fmt.Sprintf("cMygoToolbar(%s, %s, %s)", getArg(0, "nil"), getArg(1, "nil"), mygoOpts(nil))
+	case "menu_button":
+		return fmt.Sprintf("cMygoMenuButton(%s, toString(%s), %s, %s)", getArg(0, "nil"), getArg(1, `""`), getArg(2, "nil"), mygoOpts(nil))
+	case "win_size":
+		return fmt.Sprintf("cMygoWinSize(%s)", getArg(0, "nil"))
 	case "spacer":
 		return fmt.Sprintf("cMygoSpacer(%s)", getArg(0, "nil"))
 	case "divider":
